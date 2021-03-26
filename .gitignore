@@ -1,32 +1,7 @@
-# Prerequisites
-*.d
+build
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+data/fixed_calibration/debug/*
+data/fixed_calibration/result/*
 
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
+data/closed_chain_calibration/debug/*
+data/closed_chain_calibration/result/*
