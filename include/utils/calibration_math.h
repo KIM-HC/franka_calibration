@@ -1,19 +1,24 @@
-// Copyright 2021 Kim Hyoung Cheol. All rights reserved.
-// Author: Kim Hyoung Cheol
-// Email : kimhc37@snu.ac.kr
+// Copyright 2021 Kim Hyoung Cheol (kimhc37@snu.ac.kr). All rights reserved.
 
-#ifndef CALIBRATION_MATH
-#define CALIBRATION_MATH
+#ifndef UTILS_CALIBRATION_MATH_H_
+#define UTILS_CALIBRATION_MATH_H_
 
+#include <Eigen/Dense>
 #include <algorithm>
 #include <vector>
 #include <map>
 
-namespace calib_math
-{
+
+namespace calib_math {
+
+// receives dh parameters & returns homogeneous transform matrix
+Eigen::Isometry3d dh_to_transform(const double a,
+                                  const double d,
+                                  const double alpha,
+                                  const double theta);
 
 
 
-} // calib_math
+}  // namespace calib_math
 
-#endif // CALIBRATION_MATH
+#endif  // UTILS_CALIBRATION_MATH_H_

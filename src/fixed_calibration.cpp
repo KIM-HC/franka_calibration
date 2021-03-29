@@ -1,6 +1,4 @@
-// Copyright 2021 Kim Hyoung Cheol. All rights reserved.
-// Author: Kim Hyoung Cheol
-// Email : kimhc37@snu.ac.kr
+// Copyright 2021 Kim Hyoung Cheol (kimhc37@snu.ac.kr). All rights reserved.
 
 #include "../include/fixed_calibration.h"
 // #define TEST_PRINT
@@ -21,29 +19,16 @@ std::string data_input;
 std::string arm_name = "panda_left";
 int fixed_points = 2;
 std::ofstream iteration_info(current_workspace + "debug/" + arm_name + "_iteration_info.txt");
-Eigen::Isometry3d dh_to_transform(const double a, const double d, const double alpha, const double theta)
-{
-  Eigen::Isometry3d transform_dh;
-  transform_dh.setIdentity();
-  transform_dh.linear()       << cos(theta),             -1*sin(theta),          0.0,
-                                 sin(theta)*cos(alpha),  cos(theta)*cos(alpha),  -1*sin(alpha),
-                                 sin(theta)*sin(alpha),  cos(theta)*sin(alpha),  cos(alpha);
-  transform_dh.translation()  << a, -1*sin(alpha)*d, cos(alpha)*d;
-  return transform_dh;
-}
 
-std::vector<Eigen::Matrix<double, N_J, 1>> read_data(std::string data_name)
-{
+std::vector<Eigen::Matrix<double, N_J, 1>> read_data(std::string data_name) {
   std::ifstream rf;
   std::vector<Eigen::Matrix<double, N_J, 1>> q_input_;
   data_input = current_workspace + "input_data/" + data_name + ".txt";
-  std::cout << "reading -- " << data_input << std::endl; 
+  std::cout << "reading -- " << data_input << std::endl;
   rf.open(data_input);
-  while (!rf.eof())
-  {
+  while (!rf.eof()) {
     Eigen::Matrix<double, N_J, 1> d;
-    for (int i=0; i<N_J; i++)
-    {
+    for (int i=0; i< N_J; i++) {
       rf >> d(i);
     }
     q_input_.push_back(d);
@@ -53,14 +38,14 @@ std::vector<Eigen::Matrix<double, N_J, 1>> read_data(std::string data_name)
   return q_input_;
 }
 
-void write_pos_info(std::string data_name, std::vector<Eigen::Matrix<double, N_J, 1>> q_input_, Eigen::Matrix<double, N_J, 4> dh)
-{
+void write_pos_info(std::string data_name,
+                    std::vector<Eigen::Matrix<double, N_J, 1>> q_input_,
+                    Eigen::Matrix<double, N_J, 4> dh) {
   std::ofstream x_out(current_workspace + "debug/" + data_name + ".txt");
   auto fpm = FrankaPandaModel();
   fpm.initModel(dh);
 
-  for (auto & q : q_input_)
-  {
+  for (auto & q : q_input_) {
     Eigen::Isometry3d T_0e;
     T_0e.setIdentity();
     T_0e = fpm.getTransform(q);
@@ -68,23 +53,19 @@ void write_pos_info(std::string data_name, std::vector<Eigen::Matrix<double, N_J
   }
 }
 
-int main(int argc, char**argv)
-{
+int main(int argc, char**argv) {
   std::cout << "calibrating arm: " << arm_name << std::endl;
   iteration_info << "calibrating arm: " << arm_name << std::endl;
   // 0.07(from 7 to bottom) - 0.006(from robot base to bottom)
   double z = 0.064;
-  if (arm_name == "panda_left")
-  {
+  if (arm_name == "panda_left") {
     q_input_1 = read_data("input_data_left_1");
     q_input_2 = read_data("input_data_left_2");
     if (fixed_points == 3) q_input_3 = read_data("input_data_left_3");
     true_p_1 << -0.075, -0.4, z;
     true_p_2 << -0.5, 0.0, z;
     if (fixed_points == 3) true_p_3 << 0.675, 0, z;
-  }
-  else if (arm_name == "panda_right")
-  {
+  } else if (arm_name == "panda_right") {
     q_input_1 = read_data("input_data_right_1");
     q_input_2 = read_data("input_data_right_2");
     if (fixed_points == 3) q_input_3 = read_data("input_data_right_3");
@@ -96,13 +77,12 @@ int main(int argc, char**argv)
   iteration_info << "true position 1: " << true_p_1.transpose() << std::endl;
   std::cout << "true position 2: " << true_p_2.transpose() << std::endl;
   iteration_info << "true position 2: " << true_p_2.transpose() << std::endl;
-  if (fixed_points == 3)
-  {
+  if (fixed_points == 3) {
   std::cout << "true position 3: " << true_p_3.transpose() << std::endl;
   iteration_info << "true position 3: " << true_p_3.transpose() << std::endl;
   }
 
-  typedef std::pair < Eigen::Matrix<double, 7, 1>, Eigen::Matrix<double, 3, 1> > caldata ;
+  typedef std::pair < Eigen::Matrix<double, 7, 1>, Eigen::Matrix<double, 3, 1> > caldata;
 
   std::vector <caldata> calib_dataset;
 
@@ -110,18 +90,14 @@ int main(int argc, char**argv)
   if (fixed_points == 2) calib_dataset.reserve(q_input_1.size() + q_input_2.size());
   else if (fixed_points == 3) calib_dataset.reserve(q_input_1.size() + q_input_2.size() + q_input_3.size());
 
-  for (auto & q : q_input_1)
-  {
+  for (auto & q : q_input_1) {
     calib_dataset.push_back(std::make_pair(q, true_p_1));
   }
-  for (auto & q : q_input_2)
-  {
+  for (auto & q : q_input_2) {
     calib_dataset.push_back(std::make_pair(q, true_p_2));
   }
-  if (fixed_points == 3)
-  {
-    for (auto & q : q_input_3)
-    {
+  if (fixed_points == 3) {
+    for (auto & q : q_input_3) {
       calib_dataset.push_back(std::make_pair(q, true_p_3));
     }
   }
@@ -132,11 +108,14 @@ int main(int argc, char**argv)
 
   auto fpm = FrankaPandaModel();
 
-  auto function_kim2 = [&calib_dataset,&fpm](const Eigen::Ref<const Eigen::VectorXd> &x, const caldata &c, Eigen::Ref<Eigen::VectorXd> out) {
+  auto function_kim2 = [&calib_dataset, &fpm]
+                       (const Eigen::Ref<const Eigen::VectorXd> &x,
+                        const caldata &c,
+                        Eigen::Ref<Eigen::VectorXd> out) {
     const auto & q = c.first;
     Eigen::Matrix<double, N_J, 4> dh;
     dh.setZero();
-    for (int i=0 ; i<N_J; i++){dh.row(i).head<N_DH>() = x.segment<N_DH>(i*N_DH);}
+    for (int i=0 ; i<N_J; i++) {dh.row(i).head<N_DH>() = x.segment<N_DH>(i*N_DH);}
 
     Eigen::Isometry3d T_0e;
     T_0e.setIdentity();
@@ -147,18 +126,25 @@ int main(int argc, char**argv)
     out = c.second - t;
   };
 
-  auto jacobian_kim2 = [&fpm](const Eigen::Ref<const Eigen::VectorXd> &x, const caldata &c, Eigen::Ref<Eigen::MatrixXd> out)
-  {
+  auto jacobian_kim2 = [&fpm]
+                       (const Eigen::Ref<const Eigen::VectorXd> &x,
+                        const caldata &c,
+                        Eigen::Ref<Eigen::MatrixXd> out) {
     const auto & q = c.first;
     Eigen::Vector3d x_0i_1, y_0i_1, z_0i_1, x_0i, y_0i, z_0i, p_ie, p_ie_1;
     Eigen::Matrix3d R_0i, R_0i_1;
     Eigen::Isometry3d T_0i, T_0e, T_ie;
-    Eigen::Matrix<double, 3, N_CAL> jacob_k; jacob_k.setZero();
-    x_0i << 1.0, 0.0, 0.0; y_0i << 0.0, 1.0, 0.0; z_0i << 0.0, 0.0, 1.0;
-    R_0i.setIdentity(); T_0e.setIdentity(); T_0i.setIdentity();
+    Eigen::Matrix<double, 3, N_CAL> jacob_k;
+    jacob_k.setZero();
+    x_0i << 1.0, 0.0, 0.0;
+    y_0i << 0.0, 1.0, 0.0;
+    z_0i << 0.0, 0.0, 1.0;
+    R_0i.setIdentity();
+    T_0e.setIdentity();
+    T_0i.setIdentity();
     Eigen::Matrix<double, N_J, 4> dh;
     dh.setZero();
-    for (int i=0 ; i<N_J; i++){dh.row(i).head<N_DH>() = x.segment<N_DH>(i*N_DH);}
+    for (int i=0 ; i<N_J; i++) {dh.row(i).head<N_DH>() = x.segment<N_DH>(i*N_DH);}
     Eigen::Ref<Eigen::VectorXd> a_offset = dh.col(0);
     Eigen::Ref<Eigen::VectorXd> d_offset = dh.col(1);
     Eigen::Ref<Eigen::VectorXd> q_offset = dh.col(2);
@@ -167,33 +153,44 @@ int main(int argc, char**argv)
     fpm.initModel(dh);
     T_0e = fpm.getTransform(q);
 
-    Eigen::Isometry3d T_0e_test;
-    T_0e_test.setIdentity();
-    for (int i=0; i<7; i++)
-    {
-      T_0e_test = T_0e_test * dh_to_transform(dh_a(i) + a_offset(i), dh_d(i) + d_offset(i) ,  dh_al(i) + alpha_offset(i), q(i) + q_offset(i));
-    }
-    T_0e_test = T_0e_test * dh_to_transform(0.0, 0.107, 0.0, 0.0);
-
 #ifdef TEST_PRINT
+    Eigen::Isometry3d T_test;
+    T_test.setIdentity();
+    for (int i=0; i< 7; i++) {
+      T_test = T_test * dh_to_transform(dh_a(i) + a_offset(i), dh_d(i) + d_offset(i) , dh_al(i) + alpha_offset(i), q(i) + q_offset(i));
+    }
+    T_test = T_test * dh_to_transform(0.0, 0.107, 0.0, 0.0);
+
     std::cout << "--------------------------------------------------------------" << std::endl;
     std::cout << "true position: " << c.second.transpose() << std::endl;
     std::cout << "forward kinematics position: " << T_0e.translation().transpose() << std::endl;
     // std::cout << "franka model updater:\n" << T_0e.matrix() << std::endl;
-    // std::cout << "function made:\n" << T_0e_test.matrix() << std::endl;
+    // std::cout << "function made:\n" << T_test.matrix() << std::endl;
     std::cout << "translation diff: " << (T_0e.translation() - c.second).norm() << std::endl;
 
 #endif
 
     p_ie = T_0e.translation();
 
-    for (int i=0; i<N_J; i++)
-    {
-      x_0i_1 = x_0i; y_0i_1 = y_0i; z_0i_1 = z_0i; p_ie_1 = p_ie; R_0i_1 = R_0i;
+    for (int i=0; i< N_J; i++) {
+      x_0i_1 = x_0i;
+      y_0i_1 = y_0i;
+      z_0i_1 = z_0i;
+      p_ie_1 = p_ie;
+      R_0i_1 = R_0i;
 
-      x_0i = cos(q(i)+q_offset(i)) * x_0i_1               + sin(q(i)+q_offset(i)) * cos(dh_al(i)+alpha_offset(i)) * y_0i_1 + sin(q(i)+q_offset(i)) * sin(dh_al(i)+alpha_offset(i)) * z_0i_1;
-      y_0i = -1.0*sin(q(i)+q_offset(i)) * x_0i_1          + cos(q(i)+q_offset(i)) * cos(dh_al(i)+alpha_offset(i)) * y_0i_1 + cos(q(i)+q_offset(i)) * sin(dh_al(i)+alpha_offset(i)) * z_0i_1;
-      z_0i = -1.0*sin(dh_al(i)+alpha_offset(i)) * y_0i_1  + cos(dh_al(i)+alpha_offset(i)) * z_0i_1;
+      x_0i = cos(q(i)+q_offset(i)) * x_0i_1
+             + sin(q(i)+q_offset(i)) * cos(dh_al(i)
+             + alpha_offset(i)) * y_0i_1
+             + sin(q(i)+q_offset(i)) * sin(dh_al(i)+alpha_offset(i)) * z_0i_1;
+
+      y_0i = -1.0*sin(q(i)+q_offset(i)) * x_0i_1
+             + cos(q(i)+q_offset(i)) * cos(dh_al(i)
+             + alpha_offset(i)) * y_0i_1
+             + cos(q(i)+q_offset(i)) * sin(dh_al(i)+alpha_offset(i)) * z_0i_1;
+
+      z_0i = -1.0*sin(dh_al(i)+alpha_offset(i)) * y_0i_1
+             + cos(dh_al(i)+alpha_offset(i)) * z_0i_1;
 
       T_0i = T_0i * dh_to_transform(dh_a(i) + a_offset(i), dh_d(i) + d_offset(i), dh_al(i)+alpha_offset(i), q(i)+q_offset(i));
       R_0i = T_0i.linear();
@@ -202,7 +199,7 @@ int main(int argc, char**argv)
       jacob_k.col(0 + i*N_DH) += x_0i_1;
       jacob_k.col(1 + i*N_DH) += z_0i;
       jacob_k.col(2 + i*N_DH) += z_0i.cross(R_0i*p_ie);
-      if (N_DH == 4){jacob_k.col(3 + i*N_DH) += x_0i_1.cross(R_0i_1*p_ie_1);}
+      if (N_DH == 4) {jacob_k.col(3 + i*N_DH) += x_0i_1.cross(R_0i_1*p_ie_1);}
     }
     out = -jacob_k;
   };
@@ -226,12 +223,10 @@ int main(int argc, char**argv)
   double lambda = 1.0;
   int min_counter = 0;
 
-  while (iter--)
-  {
-    for (int i=0; i<calib_dataset.size(); ++i)
-    {
+  while (iter--) {
+    for (int i=0; i< calib_dataset.size(); ++i) {
       function_kim2(x, calib_dataset[i], p_total.segment<3>(i*3));
-      jacobian_kim2(x, calib_dataset[i], jac_total.block<3,N_CAL>(i*3, 0));
+      jacobian_kim2(x, calib_dataset[i], jac_total.block<3, N_CAL>(i*3, 0));
     }
 
     eval_before = eval_current;
@@ -253,15 +248,14 @@ int main(int argc, char**argv)
     auto & j = jac_total;
 
     // LM method
-    Eigen::MatrixXd j_diag = (j.transpose() * j ).diagonal().asDiagonal();
+    Eigen::MatrixXd j_diag = (j.transpose() * j).diagonal().asDiagonal();
     auto j_inv = (j.transpose() * j + lambda * j_diag).inverse() * j.transpose();
     del_phi = weight * j_inv * p_total;
 
 
-    x -= del_phi; // jacobi is oppisite direction
+    x -= del_phi;  // jacobi is oppisite direction
 
-    if (iter % 10 == 0)
-    {
+    if (iter % 10 == 0) {
       std::cout << "\n----------------------------------------\niter: " << max_iter - iter << std::endl;
       std::cout << "eval: " << eval_current << std::endl;
       std::cout << "rate: " << rate_current << std::endl;
@@ -272,11 +266,9 @@ int main(int argc, char**argv)
       iteration_info << "dphi: " << del_phi.norm() << std::endl;
     }
 
-    if (rate_current < 0.0003)
-    {
-      min_counter ++;
-      if (min_counter == 2)
-      {
+    if (rate_current < 0.0003) {
+      min_counter++;
+      if (min_counter == 2) {
         lambda += 1.0;
         std::cout << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
         iteration_info << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
@@ -287,8 +279,7 @@ int main(int argc, char**argv)
 
   Eigen::Matrix<double, N_J, 4> dh;
   dh.setZero();
-  for (int i=0 ; i<N_J; i++)
-  {
+  for (int i=0 ; i< N_J; i++) {
     dh.row(i).head<N_DH>() = x.segment<N_DH>(i*N_DH);
   }
 

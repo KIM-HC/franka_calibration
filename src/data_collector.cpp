@@ -1,6 +1,4 @@
-// Copyright 2021 Kim Hyoung Cheol. All rights reserved.
-// Author: Kim Hyoung Cheol
-// Email : kimhc37@snu.ac.kr
+// Copyright 2021 Kim Hyoung Cheol (kimhc37@snu.ac.kr). All rights reserved.
 
 #include <iostream>
 #include <fstream>
