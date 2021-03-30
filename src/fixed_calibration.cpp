@@ -76,7 +76,7 @@ int main(int argc, char**argv) {
         mid_point_save << "eval: " << eval_current << std::endl;
         mid_point_save << "rate: " << rate_current << std::endl;
         mid_point_save << "del_dh: " << data_set.del_dh.norm() << std::endl;
-        mid_point_save << data_set.dh_mat.format(tab_format);
+        mid_point_save << data_set.dh_mat.format(tab_format) << std::endl;
       }
     }
   }
