@@ -1,0 +1,14 @@
+calibrate_base : true
+name : panda_left
+save_number : 2
+# lm_method, svd_method
+method : svd_method
+lambda : 9999999999.0
+
+# 0.07(from 7 to bottom) - 0.006(from robot base to bottom)
+relations:
+  - file_name: fixed_left_1_data_1.txt
+    relation: [-0.075, -0.4, 0.064]
+
+  - file_name: fixed_left_1_data_2.txt
+    relation: [-0.5, 0.0, 0.064]

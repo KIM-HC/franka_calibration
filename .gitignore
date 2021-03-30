@@ -6,3 +6,5 @@ data/fixed_calibration/result/*
 
 data/closed_chain_calibration/debug/*
 data/closed_chain_calibration/result/*
+
+*.pyc

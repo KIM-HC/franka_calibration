@@ -1,140 +1,109 @@
 // Copyright 2021 Kim Hyoung Cheol (kimhc37@snu.ac.kr). All rights reserved.
 
 #include "../include/fixed_calibration.h"
-// #define TEST_PRINT
-
-const int N_DH = 4;  // number of dh parameters to calibrate
-const int N_J = 7;  // number of joints to calibrate
-const int N_CAL = N_DH*N_J;  // total variables to calibrate
-
-std::vector<Eigen::Matrix<double, N_J, 1>> q_input_1, q_input_2, q_input_3;
-Eigen::VectorXd dh_al(N_J), dh_a(N_J), dh_d(N_J);
-Eigen::Vector3d true_p_1;
-Eigen::Vector3d true_p_2;
-Eigen::Vector3d true_p_3;
-Eigen::IOFormat tab_format(Eigen::FullPrecision, 0, "\t", "\n");
-
-std::string current_workspace = "/home/kimhc/git/kinematics_calibration/data/fixed_calibration/";
-std::string data_input;
-std::string arm_name = "panda_left";
-int fixed_points = 2;
-std::ofstream iteration_info(current_workspace + "debug/" + arm_name + "_iteration_info.txt");
-
-std::vector<Eigen::Matrix<double, N_J, 1>> read_data(std::string data_name) {
-  std::ifstream rf;
-  std::vector<Eigen::Matrix<double, N_J, 1>> q_input_;
-  data_input = current_workspace + "input_data/" + data_name + ".txt";
-  std::cout << "reading -- " << data_input << std::endl;
-  rf.open(data_input);
-  while (!rf.eof()) {
-    Eigen::Matrix<double, N_J, 1> d;
-    for (int i=0; i< N_J; i++) {
-      rf >> d(i);
-    }
-    q_input_.push_back(d);
-  }
-  rf.close();
-  std::cout << "complete - size: " << q_input_.size() << std::endl;
-  return q_input_;
-}
-
-void write_pos_info(std::string data_name,
-                    std::vector<Eigen::Matrix<double, N_J, 1>> q_input_,
-                    Eigen::Matrix<double, N_J, 4> dh) {
-  std::ofstream x_out(current_workspace + "debug/" + data_name + ".txt");
-  auto fpm = FrankaPandaModel();
-  fpm.initModel(dh);
-
-  for (auto & q : q_input_) {
-    Eigen::Isometry3d T_0e;
-    T_0e.setIdentity();
-    T_0e = fpm.getTransform(q);
-    x_out << T_0e.translation().transpose() << std::endl;
-  }
-}
 
 int main(int argc, char**argv) {
-  std::cout << "calibrating arm: " << arm_name << std::endl;
-  iteration_info << "calibrating arm: " << arm_name << std::endl;
-  // 0.07(from 7 to bottom) - 0.006(from robot base to bottom)
-  double z = 0.064;
-  if (arm_name == "panda_left") {
-    q_input_1 = read_data("input_data_left_1");
-    q_input_2 = read_data("input_data_left_2");
-    if (fixed_points == 3) q_input_3 = read_data("input_data_left_3");
-    true_p_1 << -0.075, -0.4, z;
-    true_p_2 << -0.5, 0.0, z;
-    if (fixed_points == 3) true_p_3 << 0.675, 0, z;
-  } else if (arm_name == "panda_right") {
-    q_input_1 = read_data("input_data_right_1");
-    q_input_2 = read_data("input_data_right_2");
-    if (fixed_points == 3) q_input_3 = read_data("input_data_right_3");
-    true_p_1 << -0.075, 0.4, z;
-    true_p_2 << -0.5, 0.0, z;
-    if (fixed_points == 3) true_p_3 << 0.675, 0, z;
-  }
-  std::cout << "true position 1: " << true_p_1.transpose() << std::endl;
-  iteration_info << "true position 1: " << true_p_1.transpose() << std::endl;
-  std::cout << "true position 2: " << true_p_2.transpose() << std::endl;
-  iteration_info << "true position 2: " << true_p_2.transpose() << std::endl;
-  if (fixed_points == 3) {
-  std::cout << "true position 3: " << true_p_3.transpose() << std::endl;
-  iteration_info << "true position 3: " << true_p_3.transpose() << std::endl;
+  data_set_struct data_set;
+  FrankaPandaModel fp_model = FrankaPandaModel();
+
+  if (argc == 2) {
+    data_set.yaml_path = std::string(current_workspace) + "yaml/" + argv[1];
+  } else {
+    data_set.yaml_path = std::string(current_workspace) + "yaml/fixed_left_1.yaml";
   }
 
-  typedef std::pair < Eigen::Matrix<double, 7, 1>, Eigen::Matrix<double, 3, 1> > caldata;
+  read_yaml(&data_set);
+  struct_data(&data_set);
 
-  std::vector <caldata> calib_dataset;
+  double eval_current, eval_before, rate_current;
+  int max_iter = 10000;
+  int iter = max_iter;
+  int end_counter = 0;
+  int min_counter = 0;
 
-  // memory prealloc
-  if (fixed_points == 2) calib_dataset.reserve(q_input_1.size() + q_input_2.size());
-  else if (fixed_points == 3) calib_dataset.reserve(q_input_1.size() + q_input_2.size() + q_input_3.size());
+  Eigen::Matrix<double, N_CAL, N_CAL> weight;
+  weight.setIdentity();
+  const double rate_ = 1e-2;
+  // weight(25,25) = rate_;
+  // weight(25 + N_JDH*1,25 + N_JDH*1) = rate_;
+  // if (N_ARM == 3) weight(25 + N_JDH*2,25 + N_JDH*2) = rate_;
+  // weight(1,1) = rate_;
+  // weight(1 + N_JDH*1,1 + N_JDH*1) = rate_;
 
-  for (auto & q : q_input_1) {
-    calib_dataset.push_back(std::make_pair(q, true_p_1));
-  }
-  for (auto & q : q_input_2) {
-    calib_dataset.push_back(std::make_pair(q, true_p_2));
-  }
-  if (fixed_points == 3) {
-    for (auto & q : q_input_3) {
-      calib_dataset.push_back(std::make_pair(q, true_p_3));
+  while (iter--) {
+    compute_delta_pos(&data_set, &fp_model);
+    compute_jacobian(&data_set, &fp_model);
+
+    eval_before = eval_current;
+    eval_current = data_set.del_pos.norm() / data_set.num_input;
+    if (iter == max_iter - 1) eval_before = eval_current;
+    rate_current = ((eval_before - eval_current) / eval_before) * 100.0;
+
+    if (data_set.method == "lm_method") {
+      auto & j = data_set.jacobian;
+      Eigen::MatrixXd j_diag = (j.transpose() * j).diagonal().asDiagonal();
+      auto j_inv = (j.transpose() * j + lambda * j_diag).inverse() * j.transpose();
+      data_set.del_dh = weight * j_inv * data_set.del_pos;
+      if (rate_current < 0.0003) {
+        min_counter++;
+        if (min_counter == 2) {
+          lambda *= 1.1;
+          std::cout << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
+          iteration_info << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
+          min_counter = 0;
+        }
+      }
+    } else if (data_set.method == "svd_method") {
+      data_set.del_dh = data_set.jacobian.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(data_set.del_pos);
+    }
+
+    data_set.dh_vec -= data_set.del_dh;  // jacobi is oppisite direction
+    for (int i=0 ; i< N_J; i++)
+      data_set.dh_mat.row(i).head<N_DH>() = data_set.dh_vec.segment<N_DH>(i*N_DH);
+    fp_model.initModel(data_set.dh_mat);
+
+    if (iter % 10 == 0) {
+      std::cout << "\n----------------------------------------\niter: " << max_iter - iter << std::endl;
+      std::cout << "eval: " << eval_current << std::endl;
+      std::cout << "rate: " << rate_current << std::endl;
+      std::cout << "del_dh: " << data_set.del_dh.norm() << std::endl;
+      iteration_info << "\n----------------------------------------\niter: " << max_iter - iter << std::endl;
+      iteration_info << "eval: " << eval_current << std::endl;
+      iteration_info << "rate: " << rate_current << std::endl;
+      iteration_info << "del_dh: " << data_set.del_dh.norm() << std::endl;
+      if (iter % 500 == 0) {
+        mid_point_save << "\n----------------------------------------\niter: " << max_iter - iter << std::endl;
+        mid_point_save << "eval: " << eval_current << std::endl;
+        mid_point_save << "rate: " << rate_current << std::endl;
+        mid_point_save << "del_dh: " << data_set.del_dh.norm() << std::endl;
+        mid_point_save << data_set.dh_mat.format(tab_format);
+      }
     }
   }
 
-  dh_al << 0.0, -1.0*M_PI_2, M_PI_2, M_PI_2, -1.0*M_PI_2, M_PI_2, M_PI_2;
-  dh_a << 0.0, 0.0, 0.0, 0.0825, -0.0825, 0.0, 0.088;
-  dh_d << 0.333, 0.0, 0.316, 0.0, 0.384, 0.0, 0.0;
+  write_pos_info(&data_set, &fp_model);
 
-  auto fpm = FrankaPandaModel();
+  std::ofstream ofs(std::string(current_workspace) + "result/" + data_set.arm_name
+                    + "_" + data_set.method + "_" + std::to_string(sn) + "_dh_output.txt");
+  ofs << data_set.dh_mat.format(tab_format);
 
-  auto function_kim2 = [&calib_dataset, &fpm]
-                       (const Eigen::Ref<const Eigen::VectorXd> &x,
-                        const caldata &c,
-                        Eigen::Ref<Eigen::VectorXd> out) {
-    const auto & q = c.first;
-    Eigen::Matrix<double, N_J, 4> dh;
-    dh.setZero();
-    for (int i=0 ; i<N_J; i++) {dh.row(i).head<N_DH>() = x.segment<N_DH>(i*N_DH);}
+  ofs.close();
+  iteration_info.close();
+  mid_point_save.close();
+  return 0;
+}
 
-    Eigen::Isometry3d T_0e;
-    T_0e.setIdentity();
-    fpm.initModel(dh);
-    T_0e = fpm.getTransform(q);
-    auto t = T_0e.translation();
+void compute_jacobian(data_set_struct *ds, FrankaPandaModel *fpm) {
+  Eigen::Vector3d x_0i_1, y_0i_1, z_0i_1, x_0i, y_0i, z_0i, p_ie, p_ie_1;
+  Eigen::Matrix3d R_0i, R_0i_1;
+  Eigen::Isometry3d T_0i, T_0e, T_ie;
+  Eigen::Matrix<double, 3, N_CAL> jacob_k;
+  Eigen::Ref<Eigen::VectorXd> a_offset = ds->dh_mat.col(0);
+  Eigen::Ref<Eigen::VectorXd> d_offset = ds->dh_mat.col(1);
+  Eigen::Ref<Eigen::VectorXd> q_offset = ds->dh_mat.col(2);
+  Eigen::Ref<Eigen::VectorXd> alpha_offset = ds->dh_mat.col(3);
 
-    out = c.second - t;
-  };
-
-  auto jacobian_kim2 = [&fpm]
-                       (const Eigen::Ref<const Eigen::VectorXd> &x,
-                        const caldata &c,
-                        Eigen::Ref<Eigen::MatrixXd> out) {
-    const auto & q = c.first;
-    Eigen::Vector3d x_0i_1, y_0i_1, z_0i_1, x_0i, y_0i, z_0i, p_ie, p_ie_1;
-    Eigen::Matrix3d R_0i, R_0i_1;
-    Eigen::Isometry3d T_0i, T_0e, T_ie;
-    Eigen::Matrix<double, 3, N_CAL> jacob_k;
+  for (int i=0; i< ds->inputs.size(); i++) {
     jacob_k.setZero();
     x_0i << 1.0, 0.0, 0.0;
     y_0i << 0.0, 1.0, 0.0;
@@ -142,34 +111,9 @@ int main(int argc, char**argv) {
     R_0i.setIdentity();
     T_0e.setIdentity();
     T_0i.setIdentity();
-    Eigen::Matrix<double, N_J, 4> dh;
-    dh.setZero();
-    for (int i=0 ; i<N_J; i++) {dh.row(i).head<N_DH>() = x.segment<N_DH>(i*N_DH);}
-    Eigen::Ref<Eigen::VectorXd> a_offset = dh.col(0);
-    Eigen::Ref<Eigen::VectorXd> d_offset = dh.col(1);
-    Eigen::Ref<Eigen::VectorXd> q_offset = dh.col(2);
-    Eigen::Ref<Eigen::VectorXd> alpha_offset = dh.col(3);
 
-    fpm.initModel(dh);
-    T_0e = fpm.getTransform(q);
-
-#ifdef TEST_PRINT
-    Eigen::Isometry3d T_test;
-    T_test.setIdentity();
-    for (int i=0; i< 7; i++) {
-      T_test = T_test * dh_to_transform(dh_a(i) + a_offset(i), dh_d(i) + d_offset(i) , dh_al(i) + alpha_offset(i), q(i) + q_offset(i));
-    }
-    T_test = T_test * dh_to_transform(0.0, 0.107, 0.0, 0.0);
-
-    std::cout << "--------------------------------------------------------------" << std::endl;
-    std::cout << "true position: " << c.second.transpose() << std::endl;
-    std::cout << "forward kinematics position: " << T_0e.translation().transpose() << std::endl;
-    // std::cout << "franka model updater:\n" << T_0e.matrix() << std::endl;
-    // std::cout << "function made:\n" << T_test.matrix() << std::endl;
-    std::cout << "translation diff: " << (T_0e.translation() - c.second).norm() << std::endl;
-
-#endif
-
+    Eigen::Matrix<double, N_J, 1> &q = ds->inputs[i].first;
+    T_0e = fpm->getTransform(q);
     p_ie = T_0e.translation();
 
     for (int i=0; i< N_J; i++) {
@@ -180,17 +124,17 @@ int main(int argc, char**argv) {
       R_0i_1 = R_0i;
 
       x_0i = cos(q(i)+q_offset(i)) * x_0i_1
-             + sin(q(i)+q_offset(i)) * cos(dh_al(i)
-             + alpha_offset(i)) * y_0i_1
-             + sin(q(i)+q_offset(i)) * sin(dh_al(i)+alpha_offset(i)) * z_0i_1;
+              + sin(q(i)+q_offset(i)) * cos(dh_al(i)
+              + alpha_offset(i)) * y_0i_1
+              + sin(q(i)+q_offset(i)) * sin(dh_al(i)+alpha_offset(i)) * z_0i_1;
 
       y_0i = -1.0*sin(q(i)+q_offset(i)) * x_0i_1
-             + cos(q(i)+q_offset(i)) * cos(dh_al(i)
-             + alpha_offset(i)) * y_0i_1
-             + cos(q(i)+q_offset(i)) * sin(dh_al(i)+alpha_offset(i)) * z_0i_1;
+              + cos(q(i)+q_offset(i)) * cos(dh_al(i)
+              + alpha_offset(i)) * y_0i_1
+              + cos(q(i)+q_offset(i)) * sin(dh_al(i)+alpha_offset(i)) * z_0i_1;
 
       z_0i = -1.0*sin(dh_al(i)+alpha_offset(i)) * y_0i_1
-             + cos(dh_al(i)+alpha_offset(i)) * z_0i_1;
+              + cos(dh_al(i)+alpha_offset(i)) * z_0i_1;
 
       T_0i = T_0i * dh_to_transform(dh_a(i) + a_offset(i), dh_d(i) + d_offset(i), dh_al(i)+alpha_offset(i), q(i)+q_offset(i));
       R_0i = T_0i.linear();
@@ -201,95 +145,92 @@ int main(int argc, char**argv) {
       jacob_k.col(2 + i*N_DH) += z_0i.cross(R_0i*p_ie);
       if (N_DH == 4) {jacob_k.col(3 + i*N_DH) += x_0i_1.cross(R_0i_1*p_ie_1);}
     }
-    out = -jacob_k;
-  };
-  Eigen::VectorXd x(N_CAL);
-  x.setZero();
+    ds->jacobian.block<3, N_CAL>(i*3, 0) = -jacob_k;
+  }
+}
 
-  double eval_current, eval_before, rate_current;
-  int total_len = q_input_1.size() + q_input_2.size();
-  if (fixed_points == 3) total_len += q_input_3.size();
-  int max_iter = 10000;
-  int iter = max_iter;
-  int end_counter = 0;
+void compute_delta_pos(data_set_struct *ds, FrankaPandaModel *fpm) {
+  for (int i=0; i< ds->inputs.size(); i++) {
+    Eigen::Isometry3d T_0e = fpm->getTransform(ds->inputs[i].first);
+    Eigen::Vector3d t = T_0e.translation();
+    ds->del_pos.segment<3>(i*3) = ds->inputs[i].second - t;
+  }
+}
 
-  Eigen::VectorXd p_total;
-  Eigen::MatrixXd jac_total;
-  Eigen::VectorXd del_phi;
-  p_total.resize(3*total_len);
-  jac_total.resize(3*total_len, N_CAL);
-  del_phi.resize(N_CAL);
+void read_yaml(data_set_struct *ds) {
+  YAML::Node yaml_reader = YAML::LoadFile(ds->yaml_path);
+  ds->arm_name = yaml_reader["name"].as<std::string>();
+  ds->method = yaml_reader["method"].as<std::string>();
+  lambda = yaml_reader["lambda"].as<double>();
+  sn = yaml_reader["save_number"].as<int>();
+  ds->calibrate_base = yaml_reader["calibrate_base"];
+  ds->num_ref = yaml_reader["relations"].size();
 
-  double lambda = 1.0;
-  int min_counter = 0;
+  iteration_info.open(std::string(current_workspace) + "debug/"
+                      + ds->arm_name + "_" + ds->method + "_"
+                      + std::to_string(sn) + "_iteration_info.txt");
 
-  while (iter--) {
-    for (int i=0; i< calib_dataset.size(); ++i) {
-      function_kim2(x, calib_dataset[i], p_total.segment<3>(i*3));
-      jacobian_kim2(x, calib_dataset[i], jac_total.block<3, N_CAL>(i*3, 0));
+  mid_point_save.open(std::string(current_workspace) + "debug/"
+                      + ds->arm_name + "_" + ds->method + "_"
+                      + std::to_string(sn) + "_dh_info.txt");
+
+  iteration_info << "calibrate base: " << ds->calibrate_base << std::endl;
+  iteration_info << "calibrating arm: " << ds->arm_name << std::endl;
+  std::cout << "calibrate base: " << std::boolalpha << ds->calibrate_base << std::endl;
+  std::cout << "calibrating arm: " << ds->arm_name << std::endl;
+  iteration_info << "method: " << ds->method << std::endl;
+  iteration_info << "lambda: " << lambda << std::endl;
+  std::cout << "method: " << ds->method << std::endl;
+  std::cout << "lambda: " << lambda << std::endl;
+  for (int i=0; i< ds->num_ref; i++) {
+    ds->relations.push_back(Eigen::Vector3d(yaml_reader["relations"][i]["relation"].as<std::vector<double>>().data()));
+    ds->file_names.push_back(yaml_reader["relations"][i]["file_name"].as<std::string>());
+    std::cout << "relation: " << i << ": " << ds->relations[i].transpose() << std::endl;
+    std::cout << "rel-path: " << i << ": " << ds->file_names[i] << std::endl;
+    iteration_info << "relation: " << i << ": " << ds->relations[i].transpose() << std::endl;
+    iteration_info << "rel-path: " << i << ": " << ds->file_names[i] << std::endl;
+  }
+}
+
+void struct_data(data_set_struct *ds) {
+  dh_al << 0.0, -1.0*M_PI_2, M_PI_2, M_PI_2, -1.0*M_PI_2, M_PI_2, M_PI_2;
+  dh_a << 0.0, 0.0, 0.0, 0.0825, -0.0825, 0.0, 0.088;
+  dh_d << 0.333, 0.0, 0.316, 0.0, 0.384, 0.0, 0.0;
+  ds->base.setIdentity();
+  ds->dh_mat.setZero();
+  ds->dh_vec.setZero();
+
+  for (int i=0; i< ds->num_ref; i++) {
+    std::string data_input = std::string(current_workspace) + "input_data/" + ds->file_names[i];
+    std::ifstream rf(data_input);
+    while (!rf.eof()) {
+      Eigen::Matrix<double, N_J, 1> d;
+      for (int i=0; i< N_J; i++) {
+        rf >> d(i);
+      }
+      ds->inputs.push_back(std::make_pair(d, ds->relations[i]));
     }
+    rf.close();
+  }
+  ds->num_input = ds->inputs.size();
+  ds->jacobian.resize(3*ds->num_input, N_CAL);
+  ds->del_pos.resize(3*ds->num_input);
+  std::cout << "num data: " << ds->num_input << std::endl;
+}
 
-    eval_before = eval_current;
-    eval_current = p_total.norm() / total_len;
-    if (iter == max_iter - 1) eval_before = eval_current;
-    rate_current = ((eval_before - eval_current) / eval_before) * 100.0;
-
-    // del_phi = jac_total.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(p_total);
-
-    Eigen::Matrix<double, N_CAL, N_CAL> weight;
-    weight.setIdentity();
-    const double rate_ = 1e-2;
-    // weight(25,25) = rate_;
-    // weight(25 + N_JDH*1,25 + N_JDH*1) = rate_;
-    // if (N_ARM == 3) weight(25 + N_JDH*2,25 + N_JDH*2) = rate_;
-    // weight(1,1) = rate_;
-    // weight(1 + N_JDH*1,1 + N_JDH*1) = rate_;
-
-    auto & j = jac_total;
-
-    // LM method
-    Eigen::MatrixXd j_diag = (j.transpose() * j).diagonal().asDiagonal();
-    auto j_inv = (j.transpose() * j + lambda * j_diag).inverse() * j.transpose();
-    del_phi = weight * j_inv * p_total;
-
-
-    x -= del_phi;  // jacobi is oppisite direction
-
-    if (iter % 10 == 0) {
-      std::cout << "\n----------------------------------------\niter: " << max_iter - iter << std::endl;
-      std::cout << "eval: " << eval_current << std::endl;
-      std::cout << "rate: " << rate_current << std::endl;
-      std::cout << "dphi: " << del_phi.norm() << std::endl;
-      iteration_info << "\n----------------------------------------\niter: " << max_iter - iter << std::endl;
-      iteration_info << "eval: " << eval_current << std::endl;
-      iteration_info << "rate: " << rate_current << std::endl;
-      iteration_info << "dphi: " << del_phi.norm() << std::endl;
-    }
-
-    if (rate_current < 0.0003) {
-      min_counter++;
-      if (min_counter == 2) {
-        lambda += 1.0;
-        std::cout << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
-        iteration_info << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
-        min_counter = 0;
+void write_pos_info(data_set_struct *ds, FrankaPandaModel *fpm) {
+  std::vector<std::ofstream> writer;
+  for (int i=0; i< ds->num_ref; i++) {
+    writer.push_back(std::ofstream(std::string(current_workspace) + "debug/pos_info_" + "_"
+                                   + ds->method + "_" + std::to_string(sn) + std::to_string(i) + ".txt"));
+  }
+  for (const auto &pair_ : ds->inputs) {
+    Eigen::Isometry3d T_0e = fpm->getTransform(pair_.first);
+    for (int i=0; i< ds->num_ref; i++) {
+      if (pair_.second == ds->relations[i]) {
+        writer[i] << T_0e.translation().transpose() << std::endl;
+        break;
       }
     }
   }
-
-  Eigen::Matrix<double, N_J, 4> dh;
-  dh.setZero();
-  for (int i=0 ; i< N_J; i++) {
-    dh.row(i).head<N_DH>() = x.segment<N_DH>(i*N_DH);
-  }
-
-  write_pos_info("test1", q_input_1, dh);
-  write_pos_info("test2", q_input_2, dh);
-  if (fixed_points == 3) write_pos_info("test3", q_input_3, dh);
-
-  std::ofstream dh_out(current_workspace + "result/" + arm_name + "_dh_output.txt");
-
-  dh_out << dh.format(tab_format);
-
-  return 0;
 }

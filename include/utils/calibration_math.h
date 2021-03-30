@@ -8,16 +8,12 @@
 #include <vector>
 #include <map>
 
-
 namespace calib_math {
-
-// receives dh parameters & returns homogeneous transform matrix
-Eigen::Isometry3d dh_to_transform(const double a,
-                                  const double d,
-                                  const double alpha,
-                                  const double theta);
-
-
+    // receives dh parameters & returns homogeneous transform matrix
+    Eigen::Isometry3d dh_to_transform(const double a,
+                                    const double d,
+                                    const double alpha,
+                                    const double theta);
 
 }  // namespace calib_math
 

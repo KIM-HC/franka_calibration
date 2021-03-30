@@ -1,13 +1,143 @@
 // Copyright 2021 Kim Hyoung Cheol (kimhc37@snu.ac.kr). All rights reserved.
 
 #include "../include/closed_chain_calibration.h"
-// #define DEBUG_MODE
 
-// ./hc_closed_chain_calibration_node 2 40.0
-// ./FILE_NAME     LOAD&SAVE_FILE_NUMBER     LAMBDA(if argc >= 3, will use load saved data)
+int main(int argc, char**argv) {
+  if (argc >= 2) {
+    std::string prefix;
+    prefix = argv[1];
+    data_iter = ws_ + data_ws_ + "debug/iteration_info_trial_" + prefix + ".txt";
+    data_offset = ws_ + data_ws_ + "result/offset_data_trial_" + prefix + ".txt";
+  } else {
+    data_iter = ws_ + data_ws_ + "debug/iteration_info_trial_1.txt";
+    data_offset = ws_ + data_ws_ + "result/offset_data_trial_1.txt";
+  }
+  std::cout << "-----------------------------------------------------------------------------------------" << std::endl;
+  std::cout << "Input path: " << ws_ + data_ws_ + "input_data/input_data.txt" << std::endl;
+  std::cout << "Iter path: " << data_iter << std::endl;
+  std::cout << "Offset path: " << data_offset << std::endl;
+  std::cout << "-----------------------------------------------------------------------------------------" << std::endl;
+  initialize();
+
+  if (argc >= 3) {
+    rf.open(data_offset);
+    for (int arm_=0; arm_< N_ARM; arm_++) {
+      for (int j=0; j< N_J; j++) {
+        for (int d=0; d< N_DH; d++) {
+          rf >> offset_matrix[arm_](j, d);
+        }
+      }
+    }
+    rf.close();
+    lambda = strtod(argv[2], NULL);
+    std::cout << "Lambda: " << lambda << std::endl;
+    std::cout << "\n<<USING SAVED OFFSET>>" << std::endl;
+    std::cout << "offset_matrix LEFT:\n" << offset_matrix[0] << std::endl;
+    std::cout << "\noffset_matrix RIGHT:\n" << offset_matrix[1] << std::endl;
+    std::cout << "\noffset_matrix TOP:\n" << offset_matrix[2] << "\n\n" <<std::endl;
+  } else {
+    std::cout << "Lambda: " << lambda << std::endl;
+  }
+
+  std::ofstream iter_save(data_iter);
+  const int max_iter = 10000;
+  int iter = max_iter;
+  double ev_b;
+  double ev_f = 0.0;
+  double rate_current;
+  int min_counter = 0;
+
+  while (iter--) {
+    iter_save << "iteration: "<< max_iter - iter << std::endl;
+
+    std::cout << "\n\n----------------------------------\niteration: " << max_iter - iter << "\n" << std::endl;
+    for (int i=0; i< N_ARM; i++) {fpm[i].initModel(offset_matrix[i]);}
+    ev_b = ev_f;
+    p_total = getDistanceDiff();
+    ev_f = p_total.squaredNorm() / num_data;
+    getJacobian();
+    if (iter < max_iter - 1) {
+      rate_current = ((ev_b - ev_f) / ev_b) * 100.0;
+      std::cout << "rate: " << rate_current << std::endl;
+      iter_save << "rate: " << rate_current << std::endl;
+      if (rate_current < 0.015) {
+        min_counter++;
+        if (min_counter == 2) {
+          lambda += 1.0;
+          std::cout << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
+          iter_save << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
+          min_counter = 0;
+        }
+      }
+    }
+
+    std::cout << "eval(before): " << ev_f << std::endl;
+
+    Eigen::Matrix<double, N_CAL, N_CAL> weight;
+    weight.setIdentity();
+    const double rate_ = 1e-2;
+
+    // weight(25,25) = rate_;
+    // weight(25 + N_JDH*1,25 + N_JDH*1) = rate_;
+    // if (N_ARM == 3) weight(25 + N_JDH*2,25 + N_JDH*2) = rate_;
+
+    weight(1, 1) = rate_;
+    weight(1 + N_JDH*1, 1 + N_JDH*1) = rate_;
+    if (N_ARM == 3) weight(1 + N_JDH*2, 1 + N_JDH*2) = rate_;
+
+    auto & j = jacobian;
+
+    //// LM method
+    Eigen::MatrixXd j_diag = (j.transpose() * j).diagonal().asDiagonal();
+    auto j_inv = (j.transpose() * j + lambda * j_diag).inverse() * j.transpose();
+    del_phi = weight * j_inv * p_total;
+    // std::cout << "j_inv.diag:\n" << j_inv.diagonal() << std::endl;
+    // std::cout << "j_diag.diag:\n" << j_diag.diagonal() << std::endl;
+
+    // Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    // std::cout << "testing svd\nsingular values are:\n" << svd.singularValues() << std::endl;
+    // del_phi = svd.solve(p_total);
+    // del_phi = weight * del_phi;
+
+    std::cout << "del_phi.norm(): " << del_phi.norm() << std::endl;
+
+    for (int arm_=0; arm_< N_ARM; arm_++) {
+      for (int j=0; j< N_J; j++) {
+        offset_matrix[arm_].row(j) -= del_phi.segment<N_DH>(arm_*N_JDH + j*N_DH);
+      }
+    }
+#ifdef DEBUG_MODE
+    std::cout << "\noffset_matrix LEFT:\n" << offset_matrix[0] << std::endl;
+    std::cout << "\noffset_matrix RIGHT:\n" << offset_matrix[1] << std::endl;
+    std::cout << "\noffset_matrix TOP:\n" << offset_matrix[2] << std::endl;
+#endif
+    // if (del_phi.norm() < 1e-9)
+    // {
+    //   std::cout<<"reached optimal value at iter: "<<100 - iter<<std::endl;
+    //   break;
+    // }
+
+    iter_save << "eval(before): "<< p_total.squaredNorm() / num_data << std::endl;
+    iter_save << "del_phi.norm(): "<< del_phi.norm() << std::endl;
+    iter_save << "PANDA LEFT"<< std::endl;
+    iter_save << offset_matrix[0].format(tab_format) << std::endl;
+    iter_save << "PANDA RIGHT"<< std::endl;
+    iter_save << offset_matrix[1].format(tab_format) << std::endl;
+    iter_save << "PANDA TOP"<< std::endl;
+    iter_save << offset_matrix[2].format(tab_format) << std::endl;
+    iter_save <<"\n"<< std::endl;
+
+    std::ofstream offset_save(data_offset);
+    offset_save << offset_matrix[0].format(tab_format) <<std::endl;
+    offset_save << offset_matrix[1].format(tab_format) <<std::endl;
+    offset_save << offset_matrix[2].format(tab_format);
+    offset_save.close();
+  }
+
+  return 0;
+}
 
 void read_data(std::string file_name) {
-  std::ifstream rf;
   rf.open(file_name);
   while (!rf.eof()) {
     Eigen::Matrix<double, N_ARM, N_J> ar;
@@ -212,144 +342,4 @@ void getJacobian() {
     // Reset for next iteration.
     fpm[arm_].initModel(offset_matrix[arm_]);
   }
-}
-
-int main(int argc, char**argv) {
-  std::string prefix;
-
-  if (argc >= 2) {
-    prefix = argv[1];
-    data_iter = ws_ + data_ws_ + "debug/iteration_info_trial_" + prefix + ".txt";
-    data_offset = ws_ + data_ws_ + "result/offset_data_trial_" + prefix + ".txt";
-  } else {
-    data_iter = ws_ + data_ws_ + "debug/iteration_info_trial_1.txt";
-    data_offset = ws_ + data_ws_ + "result/offset_data_trial_1.txt";
-  }
-  std::cout << "-----------------------------------------------------------------------------------------" << std::endl;
-  std::cout << "Input path: " << ws_ + data_ws_ + "input_data/input_data.txt" << std::endl;
-  std::cout << "Iter path: " << data_iter << std::endl;
-  std::cout << "Offset path: " << data_offset << std::endl;
-  std::cout << "-----------------------------------------------------------------------------------------" << std::endl;
-  initialize();
-  double lambda = 2.0;
-
-  if (argc >= 3) {
-    std::ifstream rf;
-    rf.open(data_offset);
-    for (int arm_=0; arm_< N_ARM; arm_++) {
-      for (int j=0; j< N_J; j++) {
-        for (int d=0; d< N_DH; d++) {
-          rf >> offset_matrix[arm_](j, d);
-        }
-      }
-    }
-    rf.close();
-    lambda = strtod(argv[2], NULL);
-    std::cout << "Lambda: " << lambda << std::endl;
-    std::cout << "\n<<USING SAVED OFFSET>>" << std::endl;
-    std::cout << "offset_matrix LEFT:\n" << offset_matrix[0] << std::endl;
-    std::cout << "\noffset_matrix RIGHT:\n" << offset_matrix[1] << std::endl;
-    std::cout << "\noffset_matrix TOP:\n" << offset_matrix[2] << "\n\n" <<std::endl;
-  } else {
-    std::cout << "Lambda: " << lambda << std::endl;
-  }
-
-  std::ofstream iter_save(data_iter);
-  const int max_iter = 10000;
-  int iter = max_iter;
-  double ev_b;
-  double ev_f = 0.0;
-  double rate_current;
-  int min_counter = 0;
-
-  while (iter--) {
-    iter_save << "iteration: "<< max_iter - iter << std::endl;
-
-    std::cout << "\n\n----------------------------------\niteration: " << max_iter - iter << "\n" << std::endl;
-    for (int i=0; i< N_ARM; i++) {fpm[i].initModel(offset_matrix[i]);}
-    ev_b = ev_f;
-    p_total = getDistanceDiff();
-    ev_f = p_total.squaredNorm() / num_data;
-    getJacobian();
-    if (iter < max_iter - 1) {
-      rate_current = ((ev_b - ev_f) / ev_b) * 100.0;
-      std::cout << "rate: " << rate_current << std::endl;
-      iter_save << "rate: " << rate_current << std::endl;
-      if (rate_current < 0.015) {
-        min_counter++;
-        if (min_counter == 2) {
-          lambda += 1.0;
-          std::cout << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
-          iter_save << "Lambda(CHANGED): " << lambda << " --------------------------------------------" << std::endl;
-          min_counter = 0;
-        }
-      }
-    }
-
-    std::cout << "eval(before): " << ev_f << std::endl;
-
-
-    Eigen::Matrix<double, N_CAL, N_CAL> weight;
-    weight.setIdentity();
-    const double rate_ = 1e-2;
-
-    // weight(25,25) = rate_;
-    // weight(25 + N_JDH*1,25 + N_JDH*1) = rate_;
-    // if (N_ARM == 3) weight(25 + N_JDH*2,25 + N_JDH*2) = rate_;
-
-    weight(1, 1) = rate_;
-    weight(1 + N_JDH*1, 1 + N_JDH*1) = rate_;
-    if (N_ARM == 3) weight(1 + N_JDH*2, 1 + N_JDH*2) = rate_;
-
-    auto & j = jacobian;
-
-    // LM method
-    Eigen::MatrixXd j_diag = (j.transpose() * j).diagonal().asDiagonal();
-    auto j_inv = (j.transpose() * j + lambda * j_diag).inverse() * j.transpose();
-    del_phi = weight * j_inv * p_total;
-    // std::cout << "j_inv.diag:\n" << j_inv.diagonal() << std::endl;
-    // std::cout << "j_diag.diag:\n" << j_diag.diagonal() << std::endl;
-
-    // Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian, Eigen::ComputeThinU | Eigen::ComputeThinV);
-    // std::cout << "testing svd\nsingular values are:\n" << svd.singularValues() << std::endl;
-    // del_phi = svd.solve(p_total);
-    // del_phi = weight * del_phi;
-
-    std::cout << "del_phi.norm(): " << del_phi.norm() << std::endl;
-
-    for (int arm_=0; arm_< N_ARM; arm_++) {
-      for (int j=0; j< N_J; j++) {
-        offset_matrix[arm_].row(j) -= del_phi.segment<N_DH>(arm_*N_JDH + j*N_DH);
-      }
-    }
-#ifdef DEBUG_MODE
-    std::cout << "\noffset_matrix LEFT:\n" << offset_matrix[0] << std::endl;
-    std::cout << "\noffset_matrix RIGHT:\n" << offset_matrix[1] << std::endl;
-    std::cout << "\noffset_matrix TOP:\n" << offset_matrix[2] << std::endl;
-#endif
-    // if (del_phi.norm() < 1e-9)
-    // {
-    //   std::cout<<"reached optimal value at iter: "<<100 - iter<<std::endl;
-    //   break;
-    // }
-
-
-    iter_save << "eval(before): "<< p_total.squaredNorm() / num_data << std::endl;
-    iter_save << "del_phi.norm(): "<< del_phi.norm() << std::endl;
-    iter_save << "PANDA LEFT"<< std::endl;
-    iter_save << offset_matrix[0].format(tab_format) << std::endl;
-    iter_save << "PANDA RIGHT"<< std::endl;
-    iter_save << offset_matrix[1].format(tab_format) << std::endl;
-    iter_save << "PANDA TOP"<< std::endl;
-    iter_save << offset_matrix[2].format(tab_format) << std::endl;
-    iter_save <<"\n"<< std::endl;
-
-    std::ofstream offset_save(data_offset);
-    offset_save << offset_matrix[0].format(tab_format) <<std::endl;
-    offset_save << offset_matrix[1].format(tab_format) <<std::endl;
-    offset_save << offset_matrix[2].format(tab_format);
-    offset_save.close();
-  }
-
-  return 0;
 }

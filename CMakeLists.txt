@@ -8,11 +8,13 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
 find_package(RBDL REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 include_directories(
  include
  ${EIGEN3_INCLUDE_DIRS}    
  ${RBDL_INCLUDE_DIR}
+ ${YAML_CPP_INCLUDE_DIR}
 )
 
 add_library(calibration_math_lib
@@ -32,6 +34,7 @@ add_executable(fixed_calibration
 target_link_libraries(fixed_calibration
   ${catkin_LIBRARIES}  
   ${RBDL_LIBRARY}
+  ${YAML_CPP_LIBRARIES}
   calibration_math_lib
   pthread
 )
