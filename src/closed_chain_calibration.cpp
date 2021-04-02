@@ -3,343 +3,326 @@
 #include "../include/closed_chain_calibration.h"
 
 int main(int argc, char**argv) {
-  if (argc >= 2) {
-    std::string prefix;
-    prefix = argv[1];
-    data_iter = ws_ + data_ws_ + "debug/iteration_info_trial_" + prefix + ".txt";
-    data_offset = ws_ + data_ws_ + "result/offset_data_trial_" + prefix + ".txt";
+  std::string yaml_name_;
+  if (argc == 2) {
+    yaml_name_ = argv[1];
   } else {
-    data_iter = ws_ + data_ws_ + "debug/iteration_info_trial_1.txt";
-    data_offset = ws_ + data_ws_ + "result/offset_data_trial_1.txt";
+    yaml_name_ = "closed_1";
   }
-  std::cout << "-----------------------------------------------------------------------------------------" << std::endl;
-  std::cout << "Input path: " << ws_ + data_ws_ + "input_data/input_data.txt" << std::endl;
-  std::cout << "Iter path: " << data_iter << std::endl;
-  std::cout << "Offset path: " << data_offset << std::endl;
-  std::cout << "-----------------------------------------------------------------------------------------" << std::endl;
-  initialize();
+  std::cout << "yaml name: " << yaml_name_ << std::endl;
+  ClosedCalibration cc(yaml_name_);
+  cc.executeCalibration();
+  return 0;
+}
 
-  if (argc >= 3) {
-    rf.open(data_offset);
-    for (int arm_=0; arm_< N_ARM; arm_++) {
-      for (int j=0; j< N_J; j++) {
-        for (int d=0; d< N_DH; d++) {
-          rf >> offset_matrix[arm_](j, d);
+ClosedCalibration::ClosedCalibration(const std::string &yn) {
+  yaml_path_ = yws_ + yn + ".yaml";
+  readYaml();
+  structData();
+  // if (continue_calib_)
+  //   loadData();
+}
+
+void ClosedCalibration::readYaml() {
+  YAML::Node yn_ = YAML::LoadFile(yaml_path_);
+
+  num_rel_ = yn_["relation_types"][0]["relations"].size();
+  num_rel_type_ = yn_["relation_types"].size();
+  num_arm_ = yn_["robots"].size();
+  calibrate_base_ = yn_["calibrate_base"];
+  continue_calib_ = yn_["continue_calib"];
+  method_ = yn_["method"].as<std::string>();
+  save_name_ = yn_["save_name"].as<std::string>();
+  lambda_ = yn_["lambda"].as<double>();
+
+  std::vector<std::string> nl_;  // name list
+  for (int i=0; i < num_arm_; i++) {
+    RobotState st_;
+    st_.name = yn_["robots"][i]["name"].as<std::string>();
+    nl_.push_back(st_.name);
+    st_.base.setIdentity();
+    st_.base.translation() = Eigen::Vector3d(yn_["robots"][i]["base"].as<std::vector<double>>().data());
+    st_.base.linear() = Eigen::AngleAxisd(yn_["robots"][i]["rot"].as<double>()*M_PI/180.0, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    rs_.insert(std::make_pair(st_.name, st_));
+    std::cout << st_.name << " base:\n" << st_.base.matrix() << std::endl;
+  }
+  int qps_ = 0;
+  for (int i=0; i < 3; i++) {
+    auto it = std::find(nl_.begin(), nl_.end(), arm_priority[i]);
+    if (it != nl_.end()) {
+      #ifdef DEBUG_MODE
+      std::cout << arm_priority[i] << " will get number " << qps_ << std::endl;
+      #endif
+      rs_[arm_priority[i]].qp = qps_;
+      rnn_.insert(std::make_pair(qps_, arm_priority[i]));
+      qps_++;
+    }
+  }
+
+  for (int i=0; i < num_rel_type_; i++) {
+    std::vector<RobotRelation> r_vec_;
+    for (int j=0; j < num_rel_; j++) {
+      RobotRelation rel_;
+      rel_.base_arm = yn_["relation_types"][i]["relations"][j]["arm_set"][0].as<std::string>();
+      rel_.target_arm = yn_["relation_types"][i]["relations"][j]["arm_set"][1].as<std::string>();
+      rel_.relation = Eigen::Vector3d(yn_["relation_types"][i]["relations"][j]["relation"].as<std::vector<double>>().data());
+      r_vec_.push_back(rel_);
+    }
+    file_names_.push_back(yn_["relation_types"][i]["file_name"].as<std::string>());
+    rr_.push_back(r_vec_);
+  }
+  wfi_.open(dws_ + save_name_ + "_iteration_info.txt");
+  midpoint_path = dws_ + save_name_ + "_midpoint_save.txt";
+  wfi_ << "description: " <<  yn_["description"].as<std::string>() << std::endl;
+  wfi_ << "calibrate base: " << calibrate_base_ << std::endl;
+  wfi_ << "continue calib: " << continue_calib_ << std::endl;
+  wfi_ << "method: " << method_ << std::endl;
+  wfi_ << "lambda: " << lambda_ << std::endl;
+  std::cout << "description: " <<  yn_["description"].as<std::string>() << std::endl;
+  std::cout << "save name: " << save_name_ << std::endl;
+  std::cout << "calibrate base: " << calibrate_base_ << std::endl;
+  std::cout << "continue calib: " << continue_calib_ << std::endl;
+  std::cout << "method: " << method_ << std::endl;
+  std::cout << "lambda: " << lambda_ << std::endl;
+}
+
+void ClosedCalibration::structData() {
+  panda_dh <<  // a       d     theta  alpha
+                 0.0,    0.333,  0.0,  0.0,
+                 0.0,    0.0,    0.0,  -M_PI_2,
+                 0.0,    0.316,  0.0,  M_PI_2,
+                 0.0825, 0.0,    0.0,  M_PI_2,
+                 -0.0825,0.384,  0.0,  -M_PI_2,
+                 0.0,    0.0,    0.0,  M_PI_2,
+                 0.088,  0.0,    0.0,  M_PI_2;
+
+  tot_j_ = num_arm_ * num_j_;
+  input_size_stack_.push_back(0);
+  for (int i=0; i< num_rel_type_; i++) {
+    rf_.open(iws_ + file_names_[i]);
+    std::vector<Eigen::VectorXd> inp_;
+    while (!rf_.eof()) {
+      Eigen::VectorXd d(tot_j_);
+      for (int idx=0; idx < tot_j_; idx++) {
+        rf_ >> d(idx);
+      }
+      inp_.push_back(d);
+    }
+    inputs.push_back(inp_);
+    num_input_ += inp_.size();
+    input_size_stack_.push_back(num_input_);
+    rf_.close();
+  }
+  del_pos_.resize(num_rel_ * num_input_ * per_rel_);
+  del_dh_.resize(num_arm_ * num_j_ * num_dh_);
+  dh_mat_.resize(num_arm_ * num_j_, num_dh_);
+  jacobian_.resize(num_rel_ * num_input_ * per_rel_, num_arm_ * num_j_ * num_dh_);
+  del_pos_.setZero();
+  del_dh_.setZero();
+  dh_mat_.setZero();
+  jacobian_.setZero();
+}
+
+void ClosedCalibration::loadData() {
+    rf_.open(midpoint_path);
+    for (int arm_=0; arm_ < num_arm_; arm_++) {
+      for (int j=0; j < num_j_; j++) {
+        for (int d=0; d < num_dh_; d++) {
+          rf_ >> dh_mat_(j + arm_ * num_j_, d);
         }
       }
     }
-    rf.close();
-    lambda = strtod(argv[2], NULL);
-    std::cout << "Lambda: " << lambda << std::endl;
-    std::cout << "\n<<USING SAVED OFFSET>>" << std::endl;
-    std::cout << "offset_matrix LEFT:\n" << offset_matrix[0] << std::endl;
-    std::cout << "\noffset_matrix RIGHT:\n" << offset_matrix[1] << std::endl;
-    std::cout << "\noffset_matrix TOP:\n" << offset_matrix[2] << "\n\n" <<std::endl;
-  } else {
-    std::cout << "Lambda: " << lambda << std::endl;
-  }
+    rf_.close();
+}
 
-  std::ofstream iter_save(data_iter);
+Eigen::VectorXd ClosedCalibration::computeDeltaPos() {
+  Eigen::VectorXd rtn_del_pos(num_rel_ * num_input_ * per_rel_);
+  for (int ty=0; ty < num_rel_type_; ty++) {
+    for (int iq=0; iq < inputs[ty].size(); iq++) {
+      for (int ir=0; ir < num_rel_; ir++) {
+        const std::string &b_ = rr_[ty][ir].base_arm;
+        const std::string &t_ = rr_[ty][ir].target_arm;
+        const Eigen::Ref<const Eigen::Vector3d> &tr_ = rr_[ty][ir].relation;  // true relation
+        const Eigen::Ref<const Eigen::VectorXd> &bq_ = inputs[ty][iq].segment<num_j_>(num_j_ * rs_[b_].qp);
+        const Eigen::Ref<const Eigen::VectorXd> &tq_ = inputs[ty][iq].segment<num_j_>(num_j_ * rs_[t_].qp);
+        Eigen::Isometry3d bas_ =  rs_[b_].base * rs_[b_].fpm.getTransform(bq_);
+        Eigen::Isometry3d tar_ =  rs_[t_].base * rs_[t_].fpm.getTransform(tq_);
+        Eigen::Isometry3d T_bt_ = bas_.inverse() * tar_;
+        int sp_ = ir*per_rel_ + iq*num_rel_*per_rel_ + input_size_stack_[ty]*num_rel_*per_rel_;
+        rtn_del_pos.segment<per_rel_>(sp_) = tr_ - T_bt_.translation();
+        #ifdef DEBUG_MODE
+        // Eigen::Isometry3d test_bas_ = rs_[b_].base * computePandaTransform(panda_dh, dh_mat_.block<num_j_, num_dh_>(rs_[b_].qp * num_j_, 0), bq_);
+        // Eigen::Isometry3d test_tar_ = rs_[t_].base * computePandaTransform(panda_dh, dh_mat_.block<num_j_, num_dh_>(rs_[t_].qp * num_j_, 0), tq_);
+        // Eigen::Isometry3d test_T_ = test_bas_.inverse() * test_tar_;
+        // std::cout << "\n\nDEBUG\n\n";
+        // std::cout << "base_test:\n" << test_bas_.matrix() << std::endl;
+        // std::cout << "base_modl:\n" << bas_.matrix() << std::endl;
+        // std::cout << "target_test:\n" << test_tar_.matrix() << std::endl;
+        // std::cout << "target_modl:\n" << tar_.matrix() << std::endl;
+        // std::cout << "\ntranslation     : " << T_bt_.translation().transpose() << std::endl;
+        // std::cout << "translation_test: " << test_T_.translation().transpose() << std::endl;
+        // std::cout << "relation        : " << tr_.transpose() << std::endl;
+        // std::cout << "\ntranslation.norm()     : " << T_bt_.translation().norm() << std::endl;
+        // std::cout << "translation_test.norm(): " << test_T_.translation().norm() << std::endl;
+        // std::cout << "relation.norm()        : " << tr_.norm() << std::endl;
+        #endif
+      }
+    }
+  }
+  return rtn_del_pos;
+}
+
+void ClosedCalibration::updateStatus() {
+  for (int ai=0; ai < num_arm_; ai++) {
+    const Eigen::Ref<const Eigen::Matrix<double, num_j_, num_dh_>> &mat_ = dh_mat_.block<num_j_, num_dh_>(ai * num_j_, 0);
+    std::cout << "\ninitializing " << rnn_[ai] << " with dh:\n" << mat_ << std::endl;
+    rs_[rnn_[ai]].fpm.initModel(mat_);
+  }
+  std::cout << std::endl << std::endl;
+}
+
+void ClosedCalibration::computeJacobian() {
+  // Use a 7-point central difference stencil method.
+  Eigen::VectorXd t1, t2, m1, m2, m3;
+  for (int arm_=0; arm_< num_arm_; arm_++) {
+    Eigen::Matrix<double, num_j_, num_dh_> arm_dh_ = dh_mat_.block<num_j_, num_dh_>(arm_ * num_j_, 0);
+    FrankaPandaModel &arm_fpm_ = rs_[rnn_[arm_]].fpm;
+    Eigen::Matrix<double, num_j_, num_dh_> y1 = arm_dh_;
+    Eigen::Matrix<double, num_j_, num_dh_> y2 = arm_dh_;
+    for (int j=0; j< num_j_; j++) {
+      for (int dh_=0; dh_< num_dh_; dh_++) {
+        const double ax = std::fabs(arm_dh_(j, dh_));
+        // Make step size as small as possible while still giving usable accuracy.
+        const double h = std::sqrt(std::numeric_limits<double>::epsilon()) * (ax >= 1 ? ax : 1);
+        y1(j, dh_) += h;
+        arm_fpm_.initModel(y1);
+        t1 = computeDeltaPos();
+        y2(j, dh_) -= h;
+        arm_fpm_.initModel(y2);
+        t2 = computeDeltaPos();
+        m1 = (t1 - t2) / (y1(j, dh_) - y2(j, dh_));
+
+        y1(j, dh_) += h;
+        arm_fpm_.initModel(y1);
+        t1 = computeDeltaPos();
+        y2(j, dh_) -= h;
+        arm_fpm_.initModel(y2);
+        t2 = computeDeltaPos();
+        m2 = (t1 - t2) / (y1(j, dh_) - y2(j, dh_));
+
+        y1(j, dh_) += h;
+        arm_fpm_.initModel(y1);
+        t1 = computeDeltaPos();
+        y2(j, dh_) -= h;
+        arm_fpm_.initModel(y2);
+        t2 = computeDeltaPos();
+        m3 = (t1 - t2) / (y1(j, dh_) - y2(j, dh_));
+
+        jacobian_.col(arm_*num_j_*num_dh_ + j*num_dh_ + dh_) = 1.5 * m1 - 0.6 * m2 + 0.1 * m3;
+
+        // Reset for next iteration.
+        y1(j, dh_) = y2(j, dh_) = arm_dh_(j, dh_);
+      }
+    }
+
+    // Reset for next iteration.
+    arm_fpm_.initModel(arm_dh_);
+  }
+}
+
+void ClosedCalibration::executeCalibration() {
   const int max_iter = 10000;
   int iter = max_iter;
   double ev_b;
   double ev_f = 0.0;
   double rate_current;
   int min_counter = 0;
+  int inv_counter = 0;
 
   while (iter--) {
-    iter_save << "iteration: "<< max_iter - iter << std::endl;
-
     std::cout << "\n\n----------------------------------\niteration: " << max_iter - iter << "\n" << std::endl;
-    for (int i=0; i< N_ARM; i++) {fpm[i].initModel(offset_matrix[i]);}
+    wfi_ << "\n\n----------------------------------\niteration: " << max_iter - iter << "\n" << std::endl;
+
+    updateStatus();
     ev_b = ev_f;
-    p_total = getDistanceDiff();
-    ev_f = p_total.squaredNorm() / num_data;
-    getJacobian();
+    del_pos_ = computeDeltaPos();
+    ev_f = del_pos_.squaredNorm() / num_input_;
+    computeJacobian();
     if (iter < max_iter - 1) {
       rate_current = ((ev_b - ev_f) / ev_b) * 100.0;
       std::cout << "rate: " << rate_current << std::endl;
-      iter_save << "rate: " << rate_current << std::endl;
-      if (rate_current < 0.015) {
+      wfi_ << "rate: " << rate_current << std::endl;
+      if (0 < rate_current < 0.015) {
         min_counter++;
         if (min_counter == 2) {
-          lambda += 1.0;
-          std::cout << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
-          iter_save << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
+          lambda_ /= lambda_factor_;
+          std::cout << "Lambda(CHANGED): " << lambda_ << " ----------------------------------" << std::endl;
+          wfi_      << "Lambda(CHANGED): " << lambda_ << " ----------------------------------" << std::endl;
           min_counter = 0;
+        }
+      } else if (rate_current < -0.01) {
+        inv_counter++;
+        if (inv_counter == 2) {
+          lambda_ *= lambda_factor_;
+          std::cout << "Lambda(CHANGED): " << lambda_ << " ----------------------------------" << std::endl;
+          wfi_      << "Lambda(CHANGED): " << lambda_ << " ----------------------------------" << std::endl;
+          inv_counter = 0;
         }
       }
     }
 
     std::cout << "eval(before): " << ev_f << std::endl;
 
-    Eigen::Matrix<double, N_CAL, N_CAL> weight;
+    Eigen::MatrixXd weight(num_arm_ * num_j_ * num_dh_, num_arm_ * num_j_ * num_dh_);
     weight.setIdentity();
     const double rate_ = 1e-2;
+    for (int ai=0; ai < num_arm_; ai++) {
+      int arm_idx_ = ai * num_j_ * num_dh_;
+      // weight(0 + arm_idx_, 0 + arm_idx_) = rate_;
+      weight(1 + arm_idx_, 1 + arm_idx_) = rate_;
+      weight(25 + arm_idx_, 25 + arm_idx_) = rate_;
+    }
 
-    // weight(25,25) = rate_;
-    // weight(25 + N_JDH*1,25 + N_JDH*1) = rate_;
-    // if (N_ARM == 3) weight(25 + N_JDH*2,25 + N_JDH*2) = rate_;
+    if (method_ == "lm_method") {
+      auto & j = jacobian_;
+      Eigen::MatrixXd j_diag = (j.transpose() * j).diagonal().asDiagonal();
+      Eigen::MatrixXd identity_ = j_diag;
+      auto j_inv = (j.transpose() * j + lambda_ * (j_diag + identity_.setIdentity())).inverse() * j.transpose();
+      del_dh_ = weight * j_inv * del_pos_;
+      #ifdef DEBUG_MODE
+      // std::cout << "jacobian_:\n" << jacobian_.matrix() << std::endl;
+      // std::cout << "j_inv:\n" << j_inv.matrix() << std::endl;
+      // std::cout << "j_diag  : " << j_diag.diagonal().transpose() << std::endl;
+      // std::cout << "del_dh_ : " << del_dh_.transpose() << std::endl;
+      #endif
+    } else if (method_ == "svd_method") {
+      // Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian_, Eigen::ComputeThinU | Eigen::ComputeThinV);
+      // std::cout << "testing svd\nsingular values are:\n" << svd.singularValues() << std::endl;
+      // del_dh_ = weight * svd.solve(del_pos_);
+      del_dh_ = weight * jacobian_.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(del_pos_);
+    }
 
-    weight(1, 1) = rate_;
-    weight(1 + N_JDH*1, 1 + N_JDH*1) = rate_;
-    if (N_ARM == 3) weight(1 + N_JDH*2, 1 + N_JDH*2) = rate_;
+    std::cout << "del_dh_.norm(): " << del_dh_.norm() << std::endl;
 
-    auto & j = jacobian;
-
-    //// LM method
-    Eigen::MatrixXd j_diag = (j.transpose() * j).diagonal().asDiagonal();
-    auto j_inv = (j.transpose() * j + lambda * j_diag).inverse() * j.transpose();
-    del_phi = weight * j_inv * p_total;
-    // std::cout << "j_inv.diag:\n" << j_inv.diagonal() << std::endl;
-    // std::cout << "j_diag.diag:\n" << j_diag.diagonal() << std::endl;
-
-    // Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian, Eigen::ComputeThinU | Eigen::ComputeThinV);
-    // std::cout << "testing svd\nsingular values are:\n" << svd.singularValues() << std::endl;
-    // del_phi = svd.solve(p_total);
-    // del_phi = weight * del_phi;
-
-    std::cout << "del_phi.norm(): " << del_phi.norm() << std::endl;
-
-    for (int arm_=0; arm_< N_ARM; arm_++) {
-      for (int j=0; j< N_J; j++) {
-        offset_matrix[arm_].row(j) -= del_phi.segment<N_DH>(arm_*N_JDH + j*N_DH);
+    for (int arm_=0; arm_< num_arm_; arm_++) {
+      for (int j=0; j< num_j_; j++) {
+        dh_mat_.row(arm_ * num_j_ + j).head<num_dh_>() -= del_dh_.segment<num_dh_>((arm_ * num_j_ + j)*num_dh_);
       }
     }
-#ifdef DEBUG_MODE
-    std::cout << "\noffset_matrix LEFT:\n" << offset_matrix[0] << std::endl;
-    std::cout << "\noffset_matrix RIGHT:\n" << offset_matrix[1] << std::endl;
-    std::cout << "\noffset_matrix TOP:\n" << offset_matrix[2] << std::endl;
-#endif
-    // if (del_phi.norm() < 1e-9)
-    // {
-    //   std::cout<<"reached optimal value at iter: "<<100 - iter<<std::endl;
-    //   break;
-    // }
 
-    iter_save << "eval(before): "<< p_total.squaredNorm() / num_data << std::endl;
-    iter_save << "del_phi.norm(): "<< del_phi.norm() << std::endl;
-    iter_save << "PANDA LEFT"<< std::endl;
-    iter_save << offset_matrix[0].format(tab_format) << std::endl;
-    iter_save << "PANDA RIGHT"<< std::endl;
-    iter_save << offset_matrix[1].format(tab_format) << std::endl;
-    iter_save << "PANDA TOP"<< std::endl;
-    iter_save << offset_matrix[2].format(tab_format) << std::endl;
-    iter_save <<"\n"<< std::endl;
-
-    std::ofstream offset_save(data_offset);
-    offset_save << offset_matrix[0].format(tab_format) <<std::endl;
-    offset_save << offset_matrix[1].format(tab_format) <<std::endl;
-    offset_save << offset_matrix[2].format(tab_format);
+    std::ofstream offset_save(midpoint_path);
+    wfi_ << "eval(before): "<< del_pos_.squaredNorm() / num_input_ << std::endl;
+    wfi_ << "del_dh_.norm(): "<< del_dh_.norm() << std::endl;
+    for (int ai=0; ai < num_arm_; ai++) {
+      std::string nm_ = rs_[rnn_[ai]].name;
+      Eigen::Matrix<double, num_j_, num_dh_> mat_ = dh_mat_.block<num_j_, num_dh_>(ai * num_j_, 0);
+      wfi_ << nm_ << std::endl;
+      wfi_ << mat_.format(tab_format) << std::endl;
+      offset_save << mat_.format(tab_format);
+      if (ai < num_arm_-1)
+        offset_save << std::endl;
+    }
+    wfi_ <<"\n"<< std::endl;
     offset_save.close();
-  }
-
-  return 0;
-}
-
-void read_data(std::string file_name) {
-  rf.open(file_name);
-  while (!rf.eof()) {
-    Eigen::Matrix<double, N_ARM, N_J> ar;
-    for (int i=0; i< N_ARM; i++) {
-      Eigen::Matrix<double, 1, N_J> d;
-      for (int j=0; j< N_J; j++) {
-        rf >> d(j);
-      }
-      ar.row(i) = d;
-    }
-    int dn = 0;
-    rf >> dn;
-    data_number.push_back(dn);
-    theta_data.push_back(ar);
-  }
-  rf.close();
-}
-
-void initialize() {
-  read_data(ws_ + data_ws_ + "input_data/input_data.txt");
-
-  num_data = theta_data.size();
-  jacobian.resize(N_PARAM*num_data, N_CAL);
-  p_total.resize(N_PARAM*num_data);
-
-  z_rot180 << -1,  0,   0,
-              0,   -1,  0,
-              0,   0,   1;
-
-  x_rot180 << 1,   0,   0,
-              0,   -1,  0,
-              0,   0,   -1;
-
-  T_W0_LEFT.setIdentity();
-  T_W0_LEFT.translation() << 0.0, 0.3, 1.0;
-  T_W0_RIGHT.setIdentity();
-  T_W0_RIGHT.translation() << 0.0, -0.3, 1.0;
-  T_W0.push_back(T_W0_LEFT);
-  T_W0.push_back(T_W0_RIGHT);
-  if (N_ARM == 3) {
-  T_W0_TOP.setIdentity();
-  T_W0_TOP.translation() << 1.35, 0.3, 1.0;
-  T_W0_TOP.linear() = T_W0_TOP.linear() * z_rot180;
-  T_W0.push_back(T_W0_TOP);
-  }
-
-  std::vector<double> dist1;
-  dist1.push_back(0.207);  // LEFT&RIGHT
-  if (N_ARM == 3) {
-    dist1.push_back(sqrt(pow(0.207, 2)*2));  // RIGHT&TOP
-    dist1.push_back(0.207);  // TOP&LEFT
-  }
-  std::vector<double> dist2;
-  dist2.push_back(sqrt(pow(0.207, 2) + pow(0.0051, 2)));  // LEFT&RIGHT
-  if (N_ARM == 3) {
-    dist2.push_back(sqrt(pow(0.207, 2)*2 + pow(0.0051, 2)));  // RIGHT&TOP
-    dist2.push_back(0.207);  // TOP&LEFT
-  }
-
-  distTrue.push_back(dist1);
-  distTrue.push_back(dist2);
-
-  for (int i=0; i< N_ARM; i++) {
-    FrankaPandaModel fpm_ = FrankaPandaModel();
-    Eigen::Matrix<double, N_J, N_DH> x;
-    x.setZero();
-
-    offset_matrix.push_back(x);
-    fpm.push_back(fpm_);
-  }
-
-  std::cout << "Number of datasets: " << theta_data.size() << std::endl;
-  if (N_ARM == 2) {
-    std::cout << "Distance L&R (data1): " << distTrue[0][0] << std::endl;
-    std::cout << "Distance L&R (data2): " << distTrue[1][0] << std::endl;
-  } else if (N_ARM == 3) {
-    std::cout << "Distance L&R (data1): " << distTrue[0][0] << std::endl;
-    std::cout << "Distance R&T (data1): " << distTrue[0][1] << std::endl;
-    std::cout << "Distance T&L (data1): " << distTrue[0][2] << std::endl;
-    std::cout << "Distance L&R (data2): " << distTrue[1][0] << std::endl;
-    std::cout << "Distance R&T (data2): " << distTrue[1][1] << std::endl;
-    std::cout << "Distance T&L (data2): " << distTrue[1][2] << std::endl;
-  }
-}
-
-Eigen::VectorXd getDistanceDiff() {
-  Eigen::VectorXd del_(N_PARAM*num_data);
-  del_.setZero();
-
-  for (int i=0; i< num_data; i++) {
-    auto T_left = (T_W0[0]) * fpm[0].getTransform(theta_data[i].row(0));  // LEFT
-    auto T_right = (T_W0[1]) * fpm[1].getTransform(theta_data[i].row(1));  // RIGHT
-    Eigen::Isometry3d T_top;
-    if (N_ARM == 3) T_top = (T_W0[2]) * fpm[2].getTransform(theta_data[i].row(2));  // TOP
-
-    Eigen::Vector3d X_left = T_left.translation();
-    Eigen::Vector3d X_right = T_right.translation();
-    Eigen::Vector3d X_top;
-    if (N_ARM == 3) X_top = T_top.translation();
-
-    int nn = data_number[i] - 1;
-    del_(i * N_PARAM + 0) = distTrue[nn][0] - (X_left - X_right).norm();
-    if (N_ARM == 3) {
-      del_(i * N_PARAM + 1) = distTrue[nn][1] - (X_right - X_top).norm();
-      del_(i * N_PARAM + 2) = distTrue[nn][2] - (X_top - X_left).norm();
-    }
-
-    if (N_PARAM > N_ARM * (N_ARM-1) * 0.51) {
-      if (nn == 1) {
-        Eigen::Quaterniond q_left(T_left.linear());
-        Eigen::Quaterniond q_right(T_right.linear());
-        del_((i+0.5) * N_PARAM + 0) = M_PI - q_left.angularDistance(q_right);
-        if (N_ARM == 3) {
-          Eigen::Quaterniond q_top(T_top.linear() * z_rot180);
-          del_((i+0.5) * N_PARAM + 1) = M_PI - q_right.angularDistance(q_top);
-          del_((i+0.5) * N_PARAM + 2) = q_top.angularDistance(q_left);
-        }
-      } else {
-        Eigen::Quaterniond q_left(T_left.linear());
-        Eigen::Quaterniond q_right(T_right.linear());
-        del_((i+0.5) * N_PARAM + 0) = q_left.angularDistance(q_right);
-        if (N_ARM == 3) {
-          Eigen::Quaterniond q_top(T_top.linear() * z_rot180);
-          del_((i+0.5) * N_PARAM + 1) = q_right.angularDistance(q_top);
-          del_((i+0.5) * N_PARAM + 2) = q_top.angularDistance(q_left);
-        }
-      }
-    }
-
-#ifdef DEBUG_MODE
-    std::cout << "--------------------------------------" << std::endl;
-    std::cout << "Data Number: " << data_number[i] << std::endl;
-    std::cout << "Transform_LEFT: " << X_left.transpose() << std::endl;
-    std::cout << "Transform_RIGHT: " << X_right.transpose() << std::endl;
-    if (N_ARM == 3) {
-      std::cout << "Transform_TOP: " << X_top.transpose() << std::endl;
-    }
-    std::cout << "(X_left - X_right).norm(): " << (X_left - X_right).norm() << std::endl;
-    if (N_ARM == 3) {
-      std::cout << "(X_right - X_top).norm(): " << (X_right - X_top).norm() << std::endl;
-      std::cout << "(X_top - X_left).norm(): " << (X_top - X_left).norm() << std::endl;
-    }
-    std::cout << "del_(i * N_PARAM + 0): " << del_(i*N_PARAM + 0) << std::endl;
-    if (N_ARM == 3) {
-      std::cout << "del_(i * N_PARAM + 1): " << del_(i*N_PARAM + 1) << std::endl;
-      std::cout << "del_(i * N_PARAM + 2): " << del_(i*N_PARAM + 2) << std::endl;
-    }
-    if (N_PARAM > N_ARM * (N_ARM-1) * 0.51) {
-      std::cout << "del_((i+0.5) * N_PARAM + 0): " << del_((i+0.5) * N_PARAM + 0) << std::endl;
-      if (N_ARM == 3) {
-        std::cout << "del_((i+0.5) * N_PARAM + 1): " << del_((i+0.5) * N_PARAM + 1) << std::endl;
-        std::cout << "del_((i+0.5) * N_PARAM + 2): " << del_((i+0.5) * N_PARAM + 2) << std::endl;
-      }
-    }
-#endif
-  }
-  return del_;
-}
-
-void getJacobian() {
-  // Use a 7-point central difference stencil method.
-  Eigen::VectorXd t1, t2, m1, m2, m3;
-  for (int arm_=0; arm_< N_ARM; arm_++) {
-    Eigen::Matrix<double, N_J, N_DH> y1 = offset_matrix[arm_];
-    Eigen::Matrix<double, N_J, N_DH> y2 = offset_matrix[arm_];
-    for (int j=0; j< N_J; j++) {
-      for (int dh_=0; dh_< N_DH; dh_++) {
-        const double ax = std::fabs(offset_matrix[arm_](j, dh_));
-        // Make step size as small as possible while still giving usable accuracy.
-        const double h = std::sqrt(std::numeric_limits<double>::epsilon()) * (ax >= 1 ? ax : 1);
-        y1(j, dh_) += h;
-        fpm[arm_].initModel(y1);
-        t1 = getDistanceDiff();
-        y2(j, dh_) -= h;
-        fpm[arm_].initModel(y2);
-        t2 = getDistanceDiff();
-        m1 = (t1 - t2) / (y1(j, dh_) - y2(j, dh_));
-
-        y1(j, dh_) += h;
-        fpm[arm_].initModel(y1);
-        t1 = getDistanceDiff();
-        y2(j, dh_) -= h;
-        fpm[arm_].initModel(y2);
-        t2 = getDistanceDiff();
-        m2 = (t1 - t2) / (y1(j, dh_) - y2(j, dh_));
-
-        y1(j, dh_) += h;
-        fpm[arm_].initModel(y1);
-        t1 = getDistanceDiff();
-        y2(j, dh_) -= h;
-        fpm[arm_].initModel(y2);
-        t2 = getDistanceDiff();
-        m3 = (t1 - t2) / (y1(j, dh_) - y2(j, dh_));
-
-        jacobian.col(arm_*N_JDH + j*N_DH + dh_) = 1.5 * m1 - 0.6 * m2 + 0.1 * m3;
-
-        // Reset for next iteration.
-        y1(j, dh_) = y2(j, dh_) = offset_matrix[arm_](j, dh_);
-      }
-    }
-
-    // Reset for next iteration.
-    fpm[arm_].initModel(offset_matrix[arm_]);
   }
 }

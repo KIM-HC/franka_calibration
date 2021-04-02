@@ -1,33 +1,23 @@
-calibrate_base : true
+calibrate_base: False
 num_robot : 2
-save_number : 1
-# lm_method, svd_method
-method : lm_method
-lambda : 99999999999.0
+continue_calib: no
 
-# 0.07(from 7 to bottom) - 0.006(from robot base to bottom)
-relations:
-  - file_name: fixed_left_1_data_1.txt
-    relation: [-0.075, -0.4, 0.064]
-
-  - file_name: fixed_left_1_data_2.txt
-    relation: [-0.5, 0.0, 0.064]
+lambda : 10.0
+method : lm_method  # lm_method, svd_method
+save_name : 210402_1
+description : "-- used data from 2020-11 --"
 
 robots:
   - name : panda_left
-    base : [0.0, 0.0, 0.0]
+    base : [0.0, 0.3, 1.0]
+    rot  : 0.0
 
   - name : panda_right
-    base : [0.0, 0.0, 0.0]
+    base : [0.0, -0.3, 1.0]
+    rot  : 0.0
 
 relation_types:
   - file_name : input_data_1.txt
     relations:
       - arm_set : [panda_left, panda_right]
-        relation : [0.0, 0.0, 0.0]
-
-  - file_name : input_data_2.txt
-    relations:
-      - arm_set : [panda_left, panda_right]
-        relation : [0.0, 0.0, 0.0]
-
+        relation : [0.0, 0.207, 0.0]  # from arm_set[0] to arm_set[1]

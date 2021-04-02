@@ -30,10 +30,7 @@ add_executable(fixed_calibration
   src/fixed_calibration.cpp
   src/robot_model/franka_panda_model.cpp
 )
-
 target_link_libraries(fixed_calibration
-  ${catkin_LIBRARIES}  
-  ${RBDL_LIBRARY}
   ${YAML_CPP_LIBRARIES}
   calibration_math_lib
   pthread
@@ -43,10 +40,8 @@ add_executable(closed_chain_calibration
   src/closed_chain_calibration.cpp
   src/robot_model/franka_panda_model.cpp
 )
-
 target_link_libraries(closed_chain_calibration
-  ${catkin_LIBRARIES}  
-  ${RBDL_LIBRARY}
+  ${YAML_CPP_LIBRARIES}
   calibration_math_lib
   pthread
 )
@@ -55,10 +50,7 @@ add_executable(data_collector
   src/data_collector.cpp
   src/robot_model/franka_panda_model.cpp
 )
-
 target_link_libraries(data_collector
-  ${catkin_LIBRARIES}  
-  ${RBDL_LIBRARY}
   calibration_math_lib
   pthread
 )

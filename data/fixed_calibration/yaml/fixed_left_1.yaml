@@ -1,9 +1,9 @@
 calibrate_base : true
 name : panda_left
-save_number : 1
+save_number : 125
 # lm_method, svd_method
-method : lm_method
-lambda : 99999999999.0
+method : svd_method
+lambda : 100.0
 
 # 0.07(from 7 to bottom) - 0.006(from robot base to bottom)
 relations:

@@ -3,17 +3,17 @@
 #include "../include/fixed_calibration.h"
 
 int main(int argc, char**argv) {
-  data_set_struct data_set;
+  dataSetStruct data_set;
   FrankaPandaModel fp_model = FrankaPandaModel();
 
   if (argc == 2) {
-    data_set.yaml_path = std::string(current_workspace) + "yaml/" + argv[1];
+    data_set.yaml_path = std::string(ws_) + "yaml/" + argv[1] + ".yaml";
   } else {
-    data_set.yaml_path = std::string(current_workspace) + "yaml/fixed_left_1.yaml";
+    data_set.yaml_path = std::string(ws_) + "yaml/fixed_left_1.yaml";
   }
 
-  read_yaml(&data_set);
-  struct_data(&data_set);
+  readYaml(&data_set);
+  structData(&data_set);
 
   double eval_current, eval_before, rate_current;
   int max_iter = 10000;
@@ -24,15 +24,12 @@ int main(int argc, char**argv) {
   Eigen::Matrix<double, N_CAL, N_CAL> weight;
   weight.setIdentity();
   const double rate_ = 1e-2;
-  // weight(25,25) = rate_;
-  // weight(25 + N_JDH*1,25 + N_JDH*1) = rate_;
-  // if (N_ARM == 3) weight(25 + N_JDH*2,25 + N_JDH*2) = rate_;
-  // weight(1,1) = rate_;
-  // weight(1 + N_JDH*1,1 + N_JDH*1) = rate_;
+  weight(25,25) = rate_;
+  weight(1,1) = rate_;
 
   while (iter--) {
-    compute_delta_pos(&data_set, &fp_model);
-    compute_jacobian(&data_set, &fp_model);
+    computeDeltaPos(&data_set, &fp_model);
+    computeJacobian(&data_set, &fp_model);
 
     eval_before = eval_current;
     eval_current = data_set.del_pos.norm() / data_set.num_input;
@@ -47,14 +44,14 @@ int main(int argc, char**argv) {
       if (rate_current < 0.0003) {
         min_counter++;
         if (min_counter == 2) {
-          lambda *= 1.1;
+          lambda *= 1.05;
           std::cout << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
           iteration_info << "Lambda(CHANGED): " << lambda << " ----------------------------------" << std::endl;
           min_counter = 0;
         }
       }
     } else if (data_set.method == "svd_method") {
-      data_set.del_dh = data_set.jacobian.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(data_set.del_pos);
+      data_set.del_dh = weight * data_set.jacobian.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(data_set.del_pos);
     }
 
     data_set.dh_vec -= data_set.del_dh;  // jacobi is oppisite direction
@@ -62,6 +59,13 @@ int main(int argc, char**argv) {
       data_set.dh_mat.row(i).head<N_DH>() = data_set.dh_vec.segment<N_DH>(i*N_DH);
     fp_model.initModel(data_set.dh_mat);
 
+    if ((max_iter - iter) < 20) {
+      mid_point_save << "\n----------------------------------------\niter: " << max_iter - iter << std::endl;
+      mid_point_save << "eval: " << eval_current << std::endl;
+      mid_point_save << "rate: " << rate_current << std::endl;
+      mid_point_save << "del_dh: " << data_set.del_dh.norm() << std::endl;
+      mid_point_save << data_set.dh_mat.format(tab_format) << std::endl;
+    }
     if (iter % 10 == 0) {
       std::cout << "\n----------------------------------------\niter: " << max_iter - iter << std::endl;
       std::cout << "eval: " << eval_current << std::endl;
@@ -71,7 +75,7 @@ int main(int argc, char**argv) {
       iteration_info << "eval: " << eval_current << std::endl;
       iteration_info << "rate: " << rate_current << std::endl;
       iteration_info << "del_dh: " << data_set.del_dh.norm() << std::endl;
-      if (iter % 500 == 0) {
+      if ((iter % 30 == 0) && ((max_iter - iter) > 20)) {
         mid_point_save << "\n----------------------------------------\niter: " << max_iter - iter << std::endl;
         mid_point_save << "eval: " << eval_current << std::endl;
         mid_point_save << "rate: " << rate_current << std::endl;
@@ -81,9 +85,9 @@ int main(int argc, char**argv) {
     }
   }
 
-  write_pos_info(&data_set, &fp_model);
+  writePosInfo(&data_set, &fp_model);
 
-  std::ofstream ofs(std::string(current_workspace) + "result/" + data_set.arm_name
+  std::ofstream ofs(std::string(ws_) + "result/" + data_set.arm_name
                     + "_" + data_set.method + "_" + std::to_string(sn) + "_dh_output.txt");
   ofs << data_set.dh_mat.format(tab_format);
 
@@ -93,7 +97,7 @@ int main(int argc, char**argv) {
   return 0;
 }
 
-void compute_jacobian(data_set_struct *ds, FrankaPandaModel *fpm) {
+void computeJacobian(dataSetStruct *ds, FrankaPandaModel *fpm) {
   Eigen::Vector3d x_0i_1, y_0i_1, z_0i_1, x_0i, y_0i, z_0i, p_ie, p_ie_1;
   Eigen::Matrix3d R_0i, R_0i_1;
   Eigen::Isometry3d T_0i, T_0e, T_ie;
@@ -116,48 +120,48 @@ void compute_jacobian(data_set_struct *ds, FrankaPandaModel *fpm) {
     T_0e = fpm->getTransform(q);
     p_ie = T_0e.translation();
 
-    for (int i=0; i< N_J; i++) {
+    for (int j=0; j< N_J; j++) {
       x_0i_1 = x_0i;
       y_0i_1 = y_0i;
       z_0i_1 = z_0i;
       p_ie_1 = p_ie;
       R_0i_1 = R_0i;
 
-      x_0i = cos(q(i)+q_offset(i)) * x_0i_1
-              + sin(q(i)+q_offset(i)) * cos(dh_al(i)
-              + alpha_offset(i)) * y_0i_1
-              + sin(q(i)+q_offset(i)) * sin(dh_al(i)+alpha_offset(i)) * z_0i_1;
+      x_0i = cos(q(j)+q_offset(j)) * x_0i_1
+              + sin(q(j)+q_offset(j)) * cos(panda_dh(j, 3)
+              + alpha_offset(j)) * y_0i_1
+              + sin(q(j)+q_offset(j)) * sin(panda_dh(j, 3)+alpha_offset(j)) * z_0i_1;
 
-      y_0i = -1.0*sin(q(i)+q_offset(i)) * x_0i_1
-              + cos(q(i)+q_offset(i)) * cos(dh_al(i)
-              + alpha_offset(i)) * y_0i_1
-              + cos(q(i)+q_offset(i)) * sin(dh_al(i)+alpha_offset(i)) * z_0i_1;
+      y_0i = -1.0*sin(q(j)+q_offset(j)) * x_0i_1
+              + cos(q(j)+q_offset(j)) * cos(panda_dh(j, 3)
+              + alpha_offset(j)) * y_0i_1
+              + cos(q(j)+q_offset(j)) * sin(panda_dh(j, 3)+alpha_offset(j)) * z_0i_1;
 
-      z_0i = -1.0*sin(dh_al(i)+alpha_offset(i)) * y_0i_1
-              + cos(dh_al(i)+alpha_offset(i)) * z_0i_1;
+      z_0i = -1.0*sin(panda_dh(j, 3)+alpha_offset(j)) * y_0i_1
+              + cos(panda_dh(j, 3)+alpha_offset(j)) * z_0i_1;
 
-      T_0i = T_0i * dh_to_transform(dh_a(i) + a_offset(i), dh_d(i) + d_offset(i), dh_al(i)+alpha_offset(i), q(i)+q_offset(i));
+      T_0i = T_0i * transformDH(panda_dh(j, 0) + a_offset(j),
+                               panda_dh(j, 1) + d_offset(j),
+                               panda_dh(j, 3) + alpha_offset(j),
+                               q(j) + q_offset(j));
       R_0i = T_0i.linear();
       p_ie = (T_0i.inverse() * T_0e).translation();
 
-      jacob_k.col(0 + i*N_DH) += x_0i_1;
-      jacob_k.col(1 + i*N_DH) += z_0i;
-      jacob_k.col(2 + i*N_DH) += z_0i.cross(R_0i*p_ie);
-      if (N_DH == 4) {jacob_k.col(3 + i*N_DH) += x_0i_1.cross(R_0i_1*p_ie_1);}
+      jacob_k.col(0 + j*N_DH) += x_0i_1;
+      jacob_k.col(1 + j*N_DH) += z_0i;
+      jacob_k.col(2 + j*N_DH) += z_0i.cross(R_0i*p_ie);
+      if (N_DH == 4) {jacob_k.col(3 + j*N_DH) += x_0i_1.cross(R_0i_1*p_ie_1);}
     }
     ds->jacobian.block<3, N_CAL>(i*3, 0) = -jacob_k;
   }
 }
 
-void compute_delta_pos(data_set_struct *ds, FrankaPandaModel *fpm) {
-  for (int i=0; i< ds->inputs.size(); i++) {
-    Eigen::Isometry3d T_0e = fpm->getTransform(ds->inputs[i].first);
-    Eigen::Vector3d t = T_0e.translation();
-    ds->del_pos.segment<3>(i*3) = ds->inputs[i].second - t;
-  }
+void computeDeltaPos(dataSetStruct *ds, FrankaPandaModel *fpm) {
+  for (int i=0; i< ds->inputs.size(); i++)
+    ds->del_pos.segment<3>(i*3) = ds->inputs[i].second - fpm->getTransform(ds->inputs[i].first).translation();
 }
 
-void read_yaml(data_set_struct *ds) {
+void readYaml(dataSetStruct *ds) {
   YAML::Node yaml_reader = YAML::LoadFile(ds->yaml_path);
   ds->arm_name = yaml_reader["name"].as<std::string>();
   ds->method = yaml_reader["method"].as<std::string>();
@@ -166,47 +170,49 @@ void read_yaml(data_set_struct *ds) {
   ds->calibrate_base = yaml_reader["calibrate_base"];
   ds->num_ref = yaml_reader["relations"].size();
 
-  iteration_info.open(std::string(current_workspace) + "debug/"
-                      + ds->arm_name + "_" + ds->method + "_"
-                      + std::to_string(sn) + "_iteration_info.txt");
+  iteration_info.open(std::string(ws_) + "debug/" + ds->arm_name
+                      + "_" + std::to_string(sn) + "_iteration_info.txt");
 
-  mid_point_save.open(std::string(current_workspace) + "debug/"
-                      + ds->arm_name + "_" + ds->method + "_"
-                      + std::to_string(sn) + "_dh_info.txt");
+  mid_point_save.open(std::string(ws_) + "debug/" + ds->arm_name
+                      + "_" + std::to_string(sn) + "_dh_info.txt");
 
-  iteration_info << "calibrate base: " << ds->calibrate_base << std::endl;
+  iteration_info << "calibrate base: " << std::boolalpha << ds->calibrate_base << std::endl;
   iteration_info << "calibrating arm: " << ds->arm_name << std::endl;
+  iteration_info << "method: " << ds->method << std::endl;
   std::cout << "calibrate base: " << std::boolalpha << ds->calibrate_base << std::endl;
   std::cout << "calibrating arm: " << ds->arm_name << std::endl;
-  iteration_info << "method: " << ds->method << std::endl;
-  iteration_info << "lambda: " << lambda << std::endl;
   std::cout << "method: " << ds->method << std::endl;
-  std::cout << "lambda: " << lambda << std::endl;
   for (int i=0; i< ds->num_ref; i++) {
     ds->relations.push_back(Eigen::Vector3d(yaml_reader["relations"][i]["relation"].as<std::vector<double>>().data()));
     ds->file_names.push_back(yaml_reader["relations"][i]["file_name"].as<std::string>());
-    std::cout << "relation: " << i << ": " << ds->relations[i].transpose() << std::endl;
-    std::cout << "rel-path: " << i << ": " << ds->file_names[i] << std::endl;
     iteration_info << "relation: " << i << ": " << ds->relations[i].transpose() << std::endl;
     iteration_info << "rel-path: " << i << ": " << ds->file_names[i] << std::endl;
+    std::cout << "relation: " << i << ": " << ds->relations[i].transpose() << std::endl;
+    std::cout << "rel-path: " << i << ": " << ds->file_names[i] << std::endl;
   }
 }
 
-void struct_data(data_set_struct *ds) {
-  dh_al << 0.0, -1.0*M_PI_2, M_PI_2, M_PI_2, -1.0*M_PI_2, M_PI_2, M_PI_2;
-  dh_a << 0.0, 0.0, 0.0, 0.0825, -0.0825, 0.0, 0.088;
-  dh_d << 0.333, 0.0, 0.316, 0.0, 0.384, 0.0, 0.0;
+void structData(dataSetStruct *ds) {
+  panda_dh <<  // a       d     theta  alpha
+                 0.0,    0.333,  0.0,  0.0,
+                 0.0,    0.0,    0.0,  -M_PI_2,
+                 0.0,    0.316,  0.0,  M_PI_2,
+                 0.0825, 0.0,    0.0,  M_PI_2,
+                 -0.0825,0.384,  0.0,  -M_PI_2,
+                 0.0,    0.0,    0.0,  M_PI_2,
+                 0.088,  0.0,    0.0,  M_PI_2;
+
   ds->base.setIdentity();
   ds->dh_mat.setZero();
   ds->dh_vec.setZero();
 
   for (int i=0; i< ds->num_ref; i++) {
-    std::string data_input = std::string(current_workspace) + "input_data/" + ds->file_names[i];
+    std::string data_input = std::string(ws_) + "input_data/" + ds->file_names[i];
     std::ifstream rf(data_input);
     while (!rf.eof()) {
       Eigen::Matrix<double, N_J, 1> d;
-      for (int i=0; i< N_J; i++) {
-        rf >> d(i);
+      for (int idx=0; idx < N_J; idx++) {
+        rf >> d(idx);
       }
       ds->inputs.push_back(std::make_pair(d, ds->relations[i]));
     }
@@ -218,10 +224,10 @@ void struct_data(data_set_struct *ds) {
   std::cout << "num data: " << ds->num_input << std::endl;
 }
 
-void write_pos_info(data_set_struct *ds, FrankaPandaModel *fpm) {
+void writePosInfo(dataSetStruct *ds, FrankaPandaModel *fpm) {
   std::vector<std::ofstream> writer;
   for (int i=0; i< ds->num_ref; i++) {
-    writer.push_back(std::ofstream(std::string(current_workspace) + "debug/pos_info_" + "_"
+    writer.push_back(std::ofstream(std::string(ws_) + "debug/pos_info_" + "_"
                                    + ds->method + "_" + std::to_string(sn) + std::to_string(i) + ".txt"));
   }
   for (const auto &pair_ : ds->inputs) {

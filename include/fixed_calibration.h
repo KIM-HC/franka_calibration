@@ -1,10 +1,8 @@
 // Copyright 2021 Kim Hyoung Cheol (kimhc37@snu.ac.kr). All rights reserved.
 
-#ifndef FIXED_CALIBRATION_H_
-#define FIXED_CALIBRATION_H_
+#pragma once
 
 #include <iostream>
-#include <map>
 #include <fstream>
 #include <vector>
 #include <string>
@@ -14,7 +12,7 @@
 #include "robot_model/franka_panda_model.h"
 #include "utils/calibration_math.h"
 
-using calib_math::dh_to_transform;
+using calib_math::transformDH;
 
 // #define TEST_PRINT
 
@@ -24,14 +22,14 @@ const int N_CAL = N_DH*N_J;  // total variables to calibrate
 
 double lambda = 1.0;
 int sn;
-const char current_workspace[] = "/home/kimhc/git/robot_calibration/data/fixed_calibration/";
+const char ws_[] {"/home/kimhc/git/robot_calibration/data/fixed_calibration/"};
 Eigen::IOFormat tab_format(Eigen::FullPrecision, 0, "\t", "\n");
-Eigen::Matrix<double, N_J, 1> dh_al, dh_a, dh_d;
+Eigen::Matrix<double, 7, 4> panda_dh;
 std::ofstream iteration_info;
 std::ofstream mid_point_save;
 
 // data set
-struct data_set_struct {
+struct dataSetStruct {
     std::string method;  // lm_method, svd_method
     std::string arm_name;
     std::string yaml_path;
@@ -52,18 +50,16 @@ struct data_set_struct {
 };
 
 // reads yaml
-void read_yaml(data_set_struct *ds);
+void readYaml(dataSetStruct *ds);
 
 // reads data & makes structure
-void struct_data(data_set_struct *ds);
+void structData(dataSetStruct *ds);
 
 // computes jacobian using analytical method
-void compute_jacobian(data_set_struct *ds, FrankaPandaModel *fpm);
+void computeJacobian(dataSetStruct *ds, FrankaPandaModel *fpm);
 
 // computes jacobian using analytical method
-void compute_delta_pos(data_set_struct *ds, FrankaPandaModel *fpm);
+void computeDeltaPos(dataSetStruct *ds, FrankaPandaModel *fpm);
 
 // writes pos info for debugging
-void write_pos_info(data_set_struct *ds, FrankaPandaModel *fpm);
-
-#endif  // FIXED_CALIBRATION_H_
+void writePosInfo(dataSetStruct *ds, FrankaPandaModel *fpm);
